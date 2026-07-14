@@ -381,6 +381,7 @@ private struct ManualMergeView: View {
     @State private var url: String
     @State private var category: String
     @State private var note: String
+    @State private var expectedLocal: LoginItem
 
     init(conflict: ImportConflict, state: VaultAppState) {
         self.conflict = conflict
@@ -392,6 +393,7 @@ private struct ManualMergeView: View {
         _url = State(initialValue: local.url)
         _category = State(initialValue: local.category)
         _note = State(initialValue: local.note)
+        _expectedLocal = State(initialValue: local)
     }
 
     var body: some View {
@@ -423,7 +425,8 @@ private struct ManualMergeView: View {
                             url: url,
                             category: category,
                             note: note
-                        )
+                        ),
+                        expectedLocal: expectedLocal
                     ) {
                         dismiss()
                     }

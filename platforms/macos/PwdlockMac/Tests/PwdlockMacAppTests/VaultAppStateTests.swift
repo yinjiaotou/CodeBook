@@ -311,7 +311,11 @@ func existingVaultImportPublishesSummary() throws {
         note: "合并备注"
     )
 
-    state.mergeManually(conflictID: manualConflict.id, merge: manual)
+    state.mergeManually(
+        conflictID: manualConflict.id,
+        merge: manual,
+        expectedLocal: manualConflict.local.item
+    )
 
     let manuallyResolved = try #require(state.items.first(where: { $0.id == editedAgain.id }))
     #expect(state.pendingConflictCount == 0)
@@ -447,7 +451,13 @@ func manualConflictMergeReportsFailure() throws {
         note: ""
     )
 
-    #expect(!state.mergeManually(conflictID: UUID(), merge: merge))
+    #expect(
+        !state.mergeManually(
+            conflictID: UUID(),
+            merge: merge,
+            expectedLocal: loginItem(title: "不存在", category: "")
+        )
+    )
     #expect(state.errorMessage == "无法处理此冲突。")
 }
 

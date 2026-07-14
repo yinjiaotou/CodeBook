@@ -69,4 +69,6 @@ func importConflictUIContract() throws {
     #expect(source.contains("采用导入"))
     #expect(source.contains("String(repeating: \"•\""))
     #expect(source.contains("if state.mergeManually("))
+    #expect(source.contains("@State private var expectedLocal: LoginItem"))
+    #expect(source.contains("expectedLocal: expectedLocal"))
 }

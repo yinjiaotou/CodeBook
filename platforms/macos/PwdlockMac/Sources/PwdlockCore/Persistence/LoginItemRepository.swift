@@ -281,11 +281,15 @@ public struct LoginItemRepository: Sendable {
     public func resolveManually(
         conflictID: UUID,
         merge: ManualLoginMerge,
+        expectedLocal: LoginItem,
         now: Date = Date()
     ) throws {
         let conflictWasRebased = try database.withHandle { handle in
             try withTransaction(on: handle) { () -> Bool in
                 let conflict = try loadConflict(id: conflictID, on: handle)
+                guard logicallyEquivalent(conflict.local.item, expectedLocal) else {
+                    return true
+                }
                 guard let current = try item(id: conflict.recordID, on: handle) else {
                     throw LoginItemRepositoryError.itemNotFound
                 }

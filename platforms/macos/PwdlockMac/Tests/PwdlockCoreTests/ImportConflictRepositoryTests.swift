@@ -310,7 +310,12 @@ func resolvesConflictManually() throws {
         note: "合并备注"
     )
 
-    try fixture.repository.resolveManually(conflictID: conflict.id, merge: merge, now: now)
+    try fixture.repository.resolveManually(
+        conflictID: conflict.id,
+        merge: merge,
+        expectedLocal: local,
+        now: now
+    )
 
     let loaded = try fixture.repository.item(id: local.id)
     let result = try #require(loaded)
@@ -345,12 +350,26 @@ func rejectsStaleConflictManualMerge() throws {
     )
 
     #expect(throws: LoginItemRepositoryError.conflictChanged) {
-        try fixture.repository.resolveManually(conflictID: conflict.id, merge: merge)
+        try fixture.repository.resolveManually(
+            conflictID: conflict.id,
+            merge: merge,
+            expectedLocal: local
+        )
     }
 
     #expect(try fixture.repository.item(id: local.id) == editedLocal)
     let refreshed = try #require(fixture.repository.pendingConflicts().first)
     #expect(refreshed.local.item == editedLocal)
+
+    #expect(throws: LoginItemRepositoryError.conflictChanged) {
+        try fixture.repository.resolveManually(
+            conflictID: conflict.id,
+            merge: merge,
+            expectedLocal: local
+        )
+    }
+    #expect(try fixture.repository.item(id: local.id) == editedLocal)
+    #expect(try fixture.repository.pendingConflictCount() == 1)
 }
 
 private final class ImportRepositoryFixture {

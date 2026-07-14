@@ -209,9 +209,13 @@ final class VaultAppState: ObservableObject {
     }
 
     @discardableResult
-    func mergeManually(conflictID: UUID, merge: ManualLoginMerge) -> Bool {
+    func mergeManually(conflictID: UUID, merge: ManualLoginMerge, expectedLocal: LoginItem) -> Bool {
         performConflictAction {
-            try session.loginItemRepository().resolveManually(conflictID: conflictID, merge: merge)
+            try session.loginItemRepository().resolveManually(
+                conflictID: conflictID,
+                merge: merge,
+                expectedLocal: expectedLocal
+            )
         }
     }
 
