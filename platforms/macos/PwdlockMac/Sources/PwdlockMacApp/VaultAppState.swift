@@ -39,6 +39,11 @@ final class VaultAppState: ObservableObject {
     @Published private(set) var clipboardSecondsRemaining: Int?
     @Published var isChangeMasterPasswordPresented = false
     @Published var isExportArchivePresented = false
+    @Published var isExistingVaultImportPresented = false
+    @Published var isConflictCenterPresented = false
+    @Published private(set) var pendingConflicts: [ImportConflict] = []
+
+    var pendingConflictCount: Int { pendingConflicts.count }
 
     private let session: VaultSession
     private var autoLockController: VaultAutoLockController? = nil
@@ -94,6 +99,7 @@ final class VaultAppState: ObservableObject {
         }
         if session.isUnlocked {
             reloadItems()
+            reloadConflicts()
         }
     }
 
@@ -161,6 +167,60 @@ final class VaultAppState: ObservableObject {
     func presentExportArchive() {
         isExportArchivePresented = true
         recordActivity()
+    }
+
+    func presentExistingVaultImport() {
+        isExistingVaultImportPresented = true
+        recordActivity()
+    }
+
+    func importIntoExistingVault(at archiveURL: URL, exportPassword: String) {
+        guard screen == .library, !exportPassword.isEmpty else {
+            errorMessage = "密码错误或文件损坏，未修改当前密码库。"
+            return
+        }
+        do {
+            let summary = try session.mergeArchive(at: archiveURL, exportPassword: exportPassword)
+            operationSummary = "导入完成：新增 \(summary.added) 项，已存在 \(summary.identical) 项，待处理冲突 \(summary.conflicts) 项。"
+            errorMessage = nil
+            isExistingVaultImportPresented = false
+            reloadItems()
+            reloadConflicts()
+            recordActivity()
+        } catch {
+            operationSummary = nil
+            errorMessage = "密码错误或文件损坏，未修改当前密码库。"
+        }
+    }
+
+    func useImported(conflictID: UUID) {
+        performConflictAction {
+            try session.loginItemRepository().resolveUsingImported(conflictID: conflictID)
+        }
+    }
+
+    func keepLocal(conflictID: UUID) {
+        performConflictAction {
+            try session.loginItemRepository().resolveKeepingLocal(conflictID: conflictID)
+        }
+    }
+
+    func mergeManually(conflictID: UUID, merge: ManualLoginMerge) {
+        performConflictAction {
+            try session.loginItemRepository().resolveManually(conflictID: conflictID, merge: merge)
+        }
+    }
+
+    private func performConflictAction(_ action: () throws -> Void) {
+        do {
+            try action()
+            errorMessage = nil
+            reloadItems()
+            reloadConflicts()
+            recordActivity()
+        } catch {
+            errorMessage = "无法处理此冲突。"
+        }
     }
 
     /// Exports using an independent password supplied by the export sheet.
@@ -288,6 +348,9 @@ final class VaultAppState: ObservableObject {
         isPasswordRevealed = false
         isChangeMasterPasswordPresented = false
         isExportArchivePresented = false
+        isExistingVaultImportPresented = false
+        isConflictCenterPresented = false
+        pendingConflicts = []
         screen = .unlock
     }
 
@@ -406,6 +469,16 @@ final class VaultAppState: ObservableObject {
             applyFilters()
         } catch {
             errorMessage = "无法载入密码条目。"
+        }
+    }
+
+    private func reloadConflicts() {
+        guard session.isUnlocked else { return }
+        do {
+            pendingConflicts = try session.loginItemRepository().pendingConflicts()
+        } catch {
+            pendingConflicts = []
+            errorMessage = "无法载入待处理冲突。"
         }
     }
 

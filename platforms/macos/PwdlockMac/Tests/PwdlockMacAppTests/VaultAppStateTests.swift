@@ -180,6 +180,121 @@ func libraryExportWritesPortableArchive() throws {
 }
 
 @MainActor
+@Test("existing vault import publishes a Chinese summary and pending conflict count")
+func existingVaultImportPublishesSummary() throws {
+    let sourceDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let targetDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let archiveURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("\(UUID().uuidString).pwdlock", isDirectory: false)
+    defer {
+        try? FileManager.default.removeItem(at: sourceDirectory)
+        try? FileManager.default.removeItem(at: targetDirectory)
+        try? FileManager.default.removeItem(at: archiveURL)
+    }
+    let importedConflict = loginItem(title: "导入冲突", category: "工作")
+    let added = loginItem(title: "导入新增", category: "个人")
+    let local = LoginItem(
+        id: importedConflict.id,
+        title: "本地版本",
+        username: importedConflict.username,
+        password: importedConflict.password,
+        url: importedConflict.url,
+        category: importedConflict.category,
+        note: importedConflict.note,
+        createdAt: importedConflict.createdAt,
+        updatedAt: importedConflict.updatedAt,
+        revision: importedConflict.revision,
+        deviceID: importedConflict.deviceID
+    )
+    let source = VaultSession(directory: sourceDirectory)
+    try source.create(masterPassword: "source master password")
+    try source.loginItemRepository().create(importedConflict)
+    try source.loginItemRepository().create(added)
+    try source.exportArchive(to: archiveURL, exportPassword: "separate export password")
+    let target = VaultSession(directory: targetDirectory)
+    try target.create(masterPassword: "target master password")
+    try target.loginItemRepository().create(local)
+    let state = VaultAppState(session: target)
+    state.presentExistingVaultImport()
+
+    state.importIntoExistingVault(at: archiveURL, exportPassword: "separate export password")
+
+    #expect(state.operationSummary == "导入完成：新增 1 项，已存在 0 项，待处理冲突 1 项。")
+    #expect(state.pendingConflictCount == 1)
+    #expect(state.items.contains(where: { $0.id == added.id }))
+    #expect(state.items.first(where: { $0.id == local.id }) == local)
+    #expect(!state.isExistingVaultImportPresented)
+    #expect(state.errorMessage == nil)
+
+    let conflict = try #require(state.pendingConflicts.first)
+    state.useImported(conflictID: conflict.id)
+
+    #expect(state.pendingConflictCount == 0)
+    let resolved = try #require(state.items.first(where: { $0.id == importedConflict.id }))
+    #expect(resolved.title == importedConflict.title)
+    #expect(resolved.username == importedConflict.username)
+    #expect(resolved.password == importedConflict.password)
+    #expect(Int64(resolved.updatedAt.timeIntervalSince1970 * 1_000) == Int64(importedConflict.updatedAt.timeIntervalSince1970 * 1_000))
+
+    let editedLocal = LoginItem(
+        id: resolved.id,
+        title: "本地再次修改",
+        username: resolved.username,
+        password: resolved.password,
+        url: resolved.url,
+        category: resolved.category,
+        note: resolved.note,
+        createdAt: resolved.createdAt,
+        updatedAt: resolved.updatedAt.addingTimeInterval(1),
+        revision: resolved.revision + 1,
+        deviceID: resolved.deviceID
+    )
+    try target.loginItemRepository().update(editedLocal)
+    state.importIntoExistingVault(at: archiveURL, exportPassword: "separate export password")
+    let repeatedConflict = try #require(state.pendingConflicts.first)
+
+    state.keepLocal(conflictID: repeatedConflict.id)
+
+    #expect(state.pendingConflictCount == 0)
+    #expect(state.items.first(where: { $0.id == editedLocal.id }) == editedLocal)
+
+    let editedAgain = LoginItem(
+        id: editedLocal.id,
+        title: "本地第三版",
+        username: editedLocal.username,
+        password: editedLocal.password,
+        url: editedLocal.url,
+        category: editedLocal.category,
+        note: editedLocal.note,
+        createdAt: editedLocal.createdAt,
+        updatedAt: editedLocal.updatedAt.addingTimeInterval(1),
+        revision: editedLocal.revision + 1,
+        deviceID: editedLocal.deviceID
+    )
+    try target.loginItemRepository().update(editedAgain)
+    state.importIntoExistingVault(at: archiveURL, exportPassword: "separate export password")
+    let manualConflict = try #require(state.pendingConflicts.first)
+    let manual = ManualLoginMerge(
+        title: "手动合并",
+        username: "merged-user",
+        password: "merged-secret",
+        url: "https://merged.example.com",
+        category: "合并分类",
+        note: "合并备注"
+    )
+
+    state.mergeManually(conflictID: manualConflict.id, merge: manual)
+
+    let manuallyResolved = try #require(state.items.first(where: { $0.id == editedAgain.id }))
+    #expect(state.pendingConflictCount == 0)
+    #expect(manuallyResolved.title == manual.title)
+    #expect(manuallyResolved.password == manual.password)
+    #expect(manuallyResolved.revision == max(editedAgain.revision, importedConflict.revision) + 1)
+}
+
+@MainActor
 @Test("an auto-locked session returns the library to the unlock screen")
 func lockedSessionReturnsToUnlockScreen() throws {
     let directory = FileManager.default.temporaryDirectory
