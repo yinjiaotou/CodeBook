@@ -48,3 +48,24 @@ func archiveTransferViewsUseChineseLabelsWithoutDisplayingPathsOrSecrets() throw
     #expect(source.contains("private struct ExportArchiveView: View"))
     #expect(source.contains("不要重复使用主密码。"))
 }
+
+@Test("library exposes import and conflict center while conflict passwords stay masked")
+func importConflictUIContract() throws {
+    let testFile = URL(filePath: #filePath)
+    let packageDirectory = testFile
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let source = try String(
+        contentsOf: packageDirectory.appending(path: "Sources/PwdlockMacApp/VaultViews.swift"),
+        encoding: .utf8
+    )
+
+    #expect(source.contains("导入加密文件"))
+    #expect(source.contains("导入不会静默覆盖本地记录"))
+    #expect(source.contains("待处理冲突"))
+    #expect(source.contains("使用导入版本"))
+    #expect(source.contains("保留本地版本"))
+    #expect(source.contains("采用导入"))
+    #expect(source.contains("String(repeating: \"•\""))
+}
