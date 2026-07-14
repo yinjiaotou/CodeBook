@@ -97,6 +97,38 @@ func changingMasterPasswordDisablesBiometricUnlock() throws {
     #expect(session.unlockMethod == .masterPassword)
 }
 
+@Test("biometric cleanup failure leaves the existing master password unchanged")
+func biometricCleanupFailureDoesNotChangeMasterPassword() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let keyStore = SessionTestBiometricKeyStore()
+    let session = VaultSession(
+        directory: directory,
+        biometricKeyStore: keyStore,
+        randomBytes: { Data(repeating: 0x68, count: $0) }
+    )
+    let oldPassword = "correct horse battery staple"
+    let newPassword = "new correct horse battery staple"
+    try session.create(masterPassword: oldPassword)
+    session.lock()
+    try session.unlock(masterPassword: oldPassword)
+    try session.enableBiometricUnlock()
+    keyStore.failDeletion = true
+
+    #expect(throws: VaultSessionError.biometricCleanupFailed) {
+        try session.changeMasterPassword(currentPassword: oldPassword, newPassword: newPassword)
+    }
+
+    keyStore.failDeletion = false
+    session.lock()
+    try session.unlock(masterPassword: oldPassword)
+    session.lock()
+    #expect(throws: VaultKeyEnvelopeError.authenticationFailed) {
+        try session.unlock(masterPassword: newPassword)
+    }
+}
+
 @Test("failed biometric setup removes a Keychain key created earlier in the operation")
 func failedBiometricSetupRollsBackMaterial() throws {
     let directory = FileManager.default.temporaryDirectory
@@ -722,6 +754,7 @@ private func backupTestLoginItem(title: String) -> LoginItem {
 
 private final class SessionTestBiometricKeyStore: BiometricKeyStoring, @unchecked Sendable {
     private var keys: [UUID: Data] = [:]
+    var failDeletion = false
 
     var containsAnyKey: Bool { !keys.isEmpty }
 
@@ -736,6 +769,7 @@ private final class SessionTestBiometricKeyStore: BiometricKeyStoring, @unchecke
     }
 
     func delete(vaultID: UUID) throws {
+        if failDeletion { throw BiometricKeyStoreError.unavailable }
         keys[vaultID] = nil
     }
 

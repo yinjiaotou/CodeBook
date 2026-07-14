@@ -120,6 +120,43 @@ func failedTouchIDPreservesMasterPasswordUnlock() async throws {
 }
 
 @MainActor
+@Test("master-password fallback cancels and invalidates an active Touch ID attempt")
+func masterPasswordFallbackCancelsTouchID() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let keyStore = AppTestBiometricKeyStore()
+    let password = "correct horse battery staple"
+    let session = VaultSession(
+        directory: directory,
+        biometricKeyStore: keyStore,
+        randomBytes: { Data(repeating: 0x49, count: $0) }
+    )
+    try session.create(masterPassword: password)
+    session.lock()
+    try session.unlock(masterPassword: password)
+    try session.enableBiometricUnlock()
+    session.lock()
+    let authenticator = ManualBiometricAuthenticator(available: true)
+    let state = VaultAppState(
+        session: session,
+        scheduler: ManualAppScheduler(),
+        clipboard: RecordingClipboard(),
+        biometricAuthenticator: authenticator
+    )
+    state.beginUnlockScreenIfNeeded()
+
+    state.unlock(masterPassword: password)
+    authenticator.completeLastEvenIfCancelled(.failed)
+    await Task.yield()
+
+    #expect(authenticator.cancelCount == 1)
+    #expect(state.screen == .library)
+    #expect(state.errorMessage == nil)
+    #expect(session.unlockMethod == .masterPassword)
+}
+
+@MainActor
 @Test("backgrounding cancels an active Touch ID attempt and ignores its late result")
 func backgroundCancelsTouchIDAttempt() async throws {
     let directory = FileManager.default.temporaryDirectory
@@ -1043,6 +1080,7 @@ private final class ManualBiometricAuthenticator: BiometricAuthenticating, @unch
     private(set) var requestCount = 0
     private(set) var cancelCount = 0
     private var completion: (@Sendable (BiometricAuthenticationResult, BiometricAuthenticationContext?) -> Void)?
+    private var lastCompletion: (@Sendable (BiometricAuthenticationResult, BiometricAuthenticationContext?) -> Void)?
 
     init(available: Bool) {
         isTouchIDAvailable = available
@@ -1054,6 +1092,7 @@ private final class ManualBiometricAuthenticator: BiometricAuthenticating, @unch
     ) {
         requestCount += 1
         self.completion = completion
+        lastCompletion = completion
     }
 
     func cancel() {
@@ -1065,6 +1104,10 @@ private final class ManualBiometricAuthenticator: BiometricAuthenticating, @unch
         let completion = completion
         self.completion = nil
         completion?(result, context)
+    }
+
+    func completeLastEvenIfCancelled(_ result: BiometricAuthenticationResult) {
+        lastCompletion?(result, nil)
     }
 }
 

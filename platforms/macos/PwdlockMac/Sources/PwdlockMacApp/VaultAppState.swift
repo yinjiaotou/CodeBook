@@ -278,6 +278,11 @@ final class VaultAppState: ObservableObject {
 
         do {
             try session.unlock(masterPassword: masterPassword)
+            if touchIDAttemptID != nil {
+                biometricAuthenticator.cancel()
+                touchIDAttemptID = nil
+                isTouchIDAuthenticating = false
+            }
             unlockRateLimiter.recordSuccessfulUnlock()
             errorMessage = nil
             finishUnlock()

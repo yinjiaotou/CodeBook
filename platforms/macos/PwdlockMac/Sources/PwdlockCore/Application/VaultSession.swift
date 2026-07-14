@@ -112,12 +112,12 @@ public final class VaultSession {
                 parallelism: UInt32(currentMetadata.parallelism)
             )
         )
-        try metadataStore.save(replacementMetadata)
         do {
             try disableBiometricUnlock()
         } catch {
             throw VaultSessionError.biometricCleanupFailed
         }
+        try metadataStore.save(replacementMetadata)
     }
 
     public func lock() {
