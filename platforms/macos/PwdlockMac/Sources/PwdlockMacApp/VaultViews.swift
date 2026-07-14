@@ -86,9 +86,22 @@ private struct UnlockVaultView: View {
             Button("解锁", action: unlock)
                 .buttonStyle(.borderedProminent)
                 .disabled(password.isEmpty)
+            if state.canUseTouchID {
+                Button("使用 Touch ID 解锁", systemImage: "touchid") {
+                    state.retryTouchID()
+                }
+                .disabled(state.isTouchIDAuthenticating)
+                if state.isTouchIDAuthenticating {
+                    ProgressView("正在等待 Touch ID…")
+                        .controlSize(.small)
+                }
+            }
         }
         .frame(width: 320)
         .padding(36)
+        .onAppear {
+            state.beginUnlockScreenIfNeeded()
+        }
     }
 
     private func unlock() {
@@ -144,6 +157,9 @@ private struct VaultLibraryView: View {
                                 Text(duration.title).tag(duration)
                             }
                         }
+                        if state.isTouchIDAvailable {
+                            Toggle("启用 Touch ID 快捷解锁", isOn: touchIDEnabledBinding)
+                        }
                     } label: {
                         Label("设置", systemImage: "gearshape")
                     }
@@ -190,6 +206,10 @@ private struct VaultLibraryView: View {
 
     private var autoLockDurationBinding: Binding<AutoLockDuration> {
         Binding(get: { state.autoLockDuration }, set: { state.setAutoLockDuration($0) })
+    }
+
+    private var touchIDEnabledBinding: Binding<Bool> {
+        Binding(get: { state.isTouchIDEnabled }, set: { state.setTouchIDEnabled($0) })
     }
 }
 

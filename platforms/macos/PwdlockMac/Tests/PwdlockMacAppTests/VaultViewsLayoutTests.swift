@@ -72,3 +72,23 @@ func importConflictUIContract() throws {
     #expect(source.contains("@State private var expectedLocal: LoginItem"))
     #expect(source.contains("expectedLocal: expectedLocal"))
 }
+
+@Test("Touch ID controls preserve the master-password unlock path")
+func touchIDUIContract() throws {
+    let testFile = URL(filePath: #filePath)
+    let packageDirectory = testFile
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let source = try String(
+        contentsOf: packageDirectory.appending(path: "Sources/PwdlockMacApp/VaultViews.swift"),
+        encoding: .utf8
+    )
+
+    #expect(source.contains("使用 Touch ID 解锁"))
+    #expect(source.contains("启用 Touch ID 快捷解锁"))
+    #expect(source.contains("SecureField(\"主密码\""))
+    #expect(source.contains("Button(\"解锁\""))
+    #expect(source.contains("state.beginUnlockScreenIfNeeded()"))
+    #expect(source.contains("systemImage: \"touchid\""))
+}

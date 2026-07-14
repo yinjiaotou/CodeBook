@@ -48,6 +48,7 @@ final class VaultAppState: ObservableObject {
     @Published private(set) var isTouchIDAuthenticating = false
 
     var pendingConflictCount: Int { pendingConflicts.count }
+    var isTouchIDAvailable: Bool { biometricAuthenticator.isTouchIDAvailable }
 
     private let session: VaultSession
     private var autoLockController: VaultAutoLockController? = nil
