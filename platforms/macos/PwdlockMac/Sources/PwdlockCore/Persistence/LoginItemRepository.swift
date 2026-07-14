@@ -228,31 +228,61 @@ public struct LoginItemRepository: Sendable {
         Int(try database.scalarInt("SELECT COUNT(*) FROM conflict_groups WHERE state = 'pending'"))
     }
 
-    public func update(_ item: LoginItem) throws {
-        let payload = try JSONEncoder().encode(item)
+    public func resolveKeepingLocal(conflictID: UUID) throws {
         try database.withHandle { handle in
-            let statement = try prepare(
-                "UPDATE login_items SET title = ?, payload = ? WHERE id = ?",
-                on: handle
-            )
-            defer { sqlite3_finalize(statement) }
+            try withTransaction(on: handle) {
+                _ = try loadConflict(id: conflictID, on: handle)
+                try deleteConflict(id: conflictID, on: handle)
+            }
+        }
+    }
 
-            let titleStatus = item.title.withCString {
-                sqlite3_bind_text(statement, 1, $0, -1, sqliteTransient)
+    public func resolveUsingImported(conflictID: UUID) throws {
+        try database.withHandle { handle in
+            try withTransaction(on: handle) {
+                let conflict = try loadConflict(id: conflictID, on: handle)
+                try update(conflict.imported.item, on: handle)
+                try deleteConflict(id: conflictID, on: handle)
             }
-            let payloadStatus = payload.withUnsafeBytes {
-                sqlite3_bind_blob(statement, 2, $0.baseAddress, Int32($0.count), sqliteTransient)
-            }
-            let idStatus = item.id.uuidString.withCString {
-                sqlite3_bind_text(statement, 3, $0, -1, sqliteTransient)
-            }
-            guard titleStatus == SQLITE_OK else { throw LoginItemRepositoryError.database(titleStatus) }
-            guard payloadStatus == SQLITE_OK else { throw LoginItemRepositoryError.database(payloadStatus) }
-            guard idStatus == SQLITE_OK else { throw LoginItemRepositoryError.database(idStatus) }
+        }
+    }
 
-            let stepStatus = sqlite3_step(statement)
-            guard stepStatus == SQLITE_DONE else { throw LoginItemRepositoryError.database(stepStatus) }
-            guard sqlite3_changes(handle) == 1 else { throw LoginItemRepositoryError.itemNotFound }
+    public func resolveManually(
+        conflictID: UUID,
+        merge: ManualLoginMerge,
+        now: Date = Date()
+    ) throws {
+        try database.withHandle { handle in
+            try withTransaction(on: handle) {
+                let conflict = try loadConflict(id: conflictID, on: handle)
+                let local = conflict.local.item
+                let imported = conflict.imported.item
+                let highestRevision = max(local.revision, imported.revision)
+                guard highestRevision < Int.max else {
+                    throw LoginItemRepositoryError.database(SQLITE_CONSTRAINT)
+                }
+                let merged = LoginItem(
+                    id: local.id,
+                    title: merge.title,
+                    username: merge.username,
+                    password: merge.password,
+                    url: merge.url,
+                    category: merge.category,
+                    note: merge.note,
+                    createdAt: local.createdAt,
+                    updatedAt: now,
+                    revision: highestRevision + 1,
+                    deviceID: local.deviceID
+                )
+                try update(merged, on: handle)
+                try deleteConflict(id: conflictID, on: handle)
+            }
+        }
+    }
+
+    public func update(_ item: LoginItem) throws {
+        try database.withHandle { handle in
+            try update(item, on: handle)
         }
     }
 
@@ -340,6 +370,20 @@ public struct LoginItemRepository: Sendable {
         guard status == SQLITE_OK else { throw LoginItemRepositoryError.database(status) }
     }
 
+    private func withTransaction<T>(on handle: OpaquePointer, operation: () throws -> T) throws -> T {
+        try beginTransaction(on: handle)
+        var committed = false
+        defer {
+            if !committed {
+                _ = "ROLLBACK".withCString { sqlite3_exec(handle, $0, nil, nil, nil) }
+            }
+        }
+        let result = try operation()
+        try commitTransaction(on: handle)
+        committed = true
+        return result
+    }
+
     private func item(id: UUID, on handle: OpaquePointer) throws -> LoginItem? {
         let statement = try prepare("SELECT payload FROM login_items WHERE id = ?", on: handle)
         defer { sqlite3_finalize(statement) }
@@ -351,6 +395,108 @@ public struct LoginItemRepository: Sendable {
             throw LoginItemRepositoryError.database(status == SQLITE_ROW ? SQLITE_CORRUPT : status)
         }
         return try JSONDecoder().decode(LoginItem.self, from: payload)
+    }
+
+    private func update(_ item: LoginItem, on handle: OpaquePointer) throws {
+        let payload = try JSONEncoder().encode(item)
+        let statement = try prepare(
+            "UPDATE login_items SET title = ?, payload = ? WHERE id = ?",
+            on: handle
+        )
+        defer { sqlite3_finalize(statement) }
+        let titleStatus = item.title.withCString {
+            sqlite3_bind_text(statement, 1, $0, -1, sqliteTransient)
+        }
+        let payloadStatus = payload.withUnsafeBytes {
+            sqlite3_bind_blob(statement, 2, $0.baseAddress, Int32($0.count), sqliteTransient)
+        }
+        let idStatus = item.id.uuidString.withCString {
+            sqlite3_bind_text(statement, 3, $0, -1, sqliteTransient)
+        }
+        for status in [titleStatus, payloadStatus, idStatus] {
+            guard status == SQLITE_OK else { throw LoginItemRepositoryError.database(status) }
+        }
+        let stepStatus = sqlite3_step(statement)
+        guard stepStatus == SQLITE_DONE else { throw LoginItemRepositoryError.database(stepStatus) }
+        guard sqlite3_changes(handle) == 1 else { throw LoginItemRepositoryError.itemNotFound }
+    }
+
+    private func loadConflict(id: UUID, on handle: OpaquePointer) throws -> ImportConflict {
+        let statement = try prepare(
+            """
+            SELECT g.record_id, g.title, g.created_at_ms,
+                   v.id, v.kind, v.source_vault_id, v.payload
+            FROM conflict_groups g
+            JOIN conflict_variants v ON v.group_id = g.id
+            WHERE g.id = ? AND g.state = 'pending'
+            ORDER BY v.kind ASC
+            """,
+            on: handle
+        )
+        defer { sqlite3_finalize(statement) }
+        let bindStatus = id.uuidString.withCString {
+            sqlite3_bind_text(statement, 1, $0, -1, sqliteTransient)
+        }
+        guard bindStatus == SQLITE_OK else { throw LoginItemRepositoryError.database(bindStatus) }
+
+        var recordID: UUID?
+        var title: String?
+        var createdAt: Date?
+        var local: ConflictVariant?
+        var imported: ConflictVariant?
+        while true {
+            let status = sqlite3_step(statement)
+            if status == SQLITE_DONE { break }
+            guard status == SQLITE_ROW,
+                  let rowRecordID = uuidColumn(statement, index: 0),
+                  let rowTitle = textColumn(statement, index: 1),
+                  let variantID = uuidColumn(statement, index: 3),
+                  let kindText = textColumn(statement, index: 4),
+                  let kind = ConflictVariantKind(rawValue: kindText),
+                  let sourceVaultID = uuidColumn(statement, index: 5),
+                  let payload = blobColumn(statement, index: 6) else {
+                throw LoginItemRepositoryError.database(status == SQLITE_ROW ? SQLITE_CORRUPT : status)
+            }
+            let item = try JSONDecoder().decode(LoginItem.self, from: payload)
+            guard item.id == rowRecordID, recordID == nil || recordID == rowRecordID else {
+                throw LoginItemRepositoryError.database(SQLITE_CORRUPT)
+            }
+            recordID = rowRecordID
+            title = rowTitle
+            createdAt = Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 2)) / 1_000)
+            let variant = ConflictVariant(id: variantID, kind: kind, sourceVaultID: sourceVaultID, item: item)
+            switch kind {
+            case .local:
+                guard local == nil else { throw LoginItemRepositoryError.database(SQLITE_CORRUPT) }
+                local = variant
+            case .imported:
+                guard imported == nil else { throw LoginItemRepositoryError.database(SQLITE_CORRUPT) }
+                imported = variant
+            }
+        }
+        guard let recordID, let title, let createdAt, let local, let imported else {
+            throw LoginItemRepositoryError.itemNotFound
+        }
+        return ImportConflict(
+            id: id,
+            recordID: recordID,
+            title: title,
+            createdAt: createdAt,
+            local: local,
+            imported: imported
+        )
+    }
+
+    private func deleteConflict(id: UUID, on handle: OpaquePointer) throws {
+        let statement = try prepare("DELETE FROM conflict_groups WHERE id = ?", on: handle)
+        defer { sqlite3_finalize(statement) }
+        let bindStatus = id.uuidString.withCString {
+            sqlite3_bind_text(statement, 1, $0, -1, sqliteTransient)
+        }
+        guard bindStatus == SQLITE_OK else { throw LoginItemRepositoryError.database(bindStatus) }
+        let status = sqlite3_step(statement)
+        guard status == SQLITE_DONE else { throw LoginItemRepositoryError.database(status) }
+        guard sqlite3_changes(handle) == 1 else { throw LoginItemRepositoryError.itemNotFound }
     }
 
     private func equivalentConflictExists(

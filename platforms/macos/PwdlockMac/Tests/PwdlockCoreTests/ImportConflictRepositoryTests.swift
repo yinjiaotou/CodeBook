@@ -110,6 +110,63 @@ func rollsBackEntireImportMerge() throws {
     #expect(try fixture.repository.pendingConflictCount() == 0)
 }
 
+@Test("keeping local removes the conflict without changing the active record")
+func resolvesConflictByKeepingLocal() throws {
+    let fixture = try ImportRepositoryFixture()
+    defer { fixture.close() }
+    let (local, _, conflict) = try fixture.createConflict()
+
+    try fixture.repository.resolveKeepingLocal(conflictID: conflict.id)
+
+    #expect(try fixture.repository.item(id: local.id) == local)
+    #expect(try fixture.repository.pendingConflictCount() == 0)
+}
+
+@Test("using imported replaces the active record and removes the conflict")
+func resolvesConflictUsingImported() throws {
+    let fixture = try ImportRepositoryFixture()
+    defer { fixture.close() }
+    let (local, imported, conflict) = try fixture.createConflict(importedRevision: 8)
+
+    try fixture.repository.resolveUsingImported(conflictID: conflict.id)
+
+    #expect(try fixture.repository.item(id: local.id) == imported)
+    #expect(try fixture.repository.pendingConflictCount() == 0)
+}
+
+@Test("manual merge preserves local identity and advances the highest revision")
+func resolvesConflictManually() throws {
+    let fixture = try ImportRepositoryFixture()
+    defer { fixture.close() }
+    let (local, _, conflict) = try fixture.createConflict(importedRevision: 8)
+    let now = Date(timeIntervalSince1970: 1_900_000_000)
+    let merge = ManualLoginMerge(
+        title: "合并标题",
+        username: "merged-user",
+        password: "merged-secret",
+        url: "https://merged.example.com",
+        category: "合并分类",
+        note: "合并备注"
+    )
+
+    try fixture.repository.resolveManually(conflictID: conflict.id, merge: merge, now: now)
+
+    let loaded = try fixture.repository.item(id: local.id)
+    let result = try #require(loaded)
+    #expect(result.id == local.id)
+    #expect(result.createdAt == local.createdAt)
+    #expect(result.deviceID == local.deviceID)
+    #expect(result.updatedAt == now)
+    #expect(result.revision == 9)
+    #expect(result.title == merge.title)
+    #expect(result.username == merge.username)
+    #expect(result.password == merge.password)
+    #expect(result.url == merge.url)
+    #expect(result.category == merge.category)
+    #expect(result.note == merge.note)
+    #expect(try fixture.repository.pendingConflictCount() == 0)
+}
+
 private final class ImportRepositoryFixture {
     let sourceVaultID = UUID(uuidString: "dddddddd-dddd-4ddd-8ddd-dddddddddddd")!
     let localVaultID = UUID(uuidString: "ffffffff-ffff-4fff-8fff-ffffffffffff")!
@@ -164,5 +221,17 @@ private final class ImportRepositoryFixture {
             revision: revision ?? item.revision,
             deviceID: item.deviceID
         )
+    }
+
+    func createConflict(importedRevision: Int = 2) throws -> (LoginItem, LoginItem, ImportConflict) {
+        let local = item(title: "本地", revision: 3)
+        let imported = copy(local, title: "导入", revision: importedRevision)
+        try repository.create(local)
+        _ = try repository.mergeImportedItems(
+            [imported],
+            importedSourceVaultID: sourceVaultID,
+            localSourceVaultID: localVaultID
+        )
+        return (local, imported, try #require(repository.pendingConflicts().first))
     }
 }
