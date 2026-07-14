@@ -79,8 +79,23 @@ public struct LoginItemRepository: Sendable {
         _ items: [LoginItem],
         importedSourceVaultID: UUID,
         localSourceVaultID: UUID,
+        now: Date = Date()
+    ) throws -> ImportMergeSummary {
+        try mergeImportedItems(
+            items,
+            importedSourceVaultID: importedSourceVaultID,
+            localSourceVaultID: localSourceVaultID,
+            now: now,
+            beforeCommit: {}
+        )
+    }
+
+    func mergeImportedItems(
+        _ items: [LoginItem],
+        importedSourceVaultID: UUID,
+        localSourceVaultID: UUID,
         now: Date = Date(),
-        beforeCommit: () throws -> Void = {}
+        beforeCommit: () throws -> Void
     ) throws -> ImportMergeSummary {
         try database.withHandle { handle in
             try beginTransaction(on: handle)
@@ -100,7 +115,7 @@ public struct LoginItemRepository: Sendable {
                     added += 1
                     continue
                 }
-                guard local != imported else {
+                guard !logicallyEquivalent(local, imported) else {
                     identical += 1
                     continue
                 }
@@ -531,6 +546,24 @@ public struct LoginItemRepository: Sendable {
         if status == SQLITE_ROW { return true }
         if status == SQLITE_DONE { return false }
         throw LoginItemRepositoryError.database(status)
+    }
+
+    private func logicallyEquivalent(_ local: LoginItem, _ imported: LoginItem) -> Bool {
+        local.id == imported.id
+            && local.title == imported.title
+            && local.username == imported.username
+            && local.password == imported.password
+            && local.url == imported.url
+            && local.category == imported.category
+            && local.note == imported.note
+            && protocolMilliseconds(local.createdAt) == protocolMilliseconds(imported.createdAt)
+            && protocolMilliseconds(local.updatedAt) == protocolMilliseconds(imported.updatedAt)
+            && local.revision == imported.revision
+            && local.deviceID == imported.deviceID
+    }
+
+    private func protocolMilliseconds(_ date: Date) -> Int64 {
+        Int64(date.timeIntervalSince1970 * 1_000)
     }
 
     private func insertConflictGroup(

@@ -185,7 +185,7 @@ public func pendingConflicts() throws -> [ImportConflict]
 public func pendingConflictCount() throws -> Int
 ```
 
-实现必须使用 `BEGIN IMMEDIATE`/`COMMIT`，任何错误由 `defer` 执行 `ROLLBACK`。逐条读取现有 `payload`：不存在则调用当前 `insert`；`LoginItem == imported` 则计为相同；不同时将本地和导入 JSON 编码后，查询同 `record_id`、同导入来源 `source_vault_id` 且两份 payload 字节都相同的现有组，只有查不到时才插入一个 group 和两个 variant。本地变体写 `localSourceVaultID`，导入变体写 `importedSourceVaultID`。返回值只统计本次实际新增的冲突。
+实现必须使用 `BEGIN IMMEDIATE`/`COMMIT`，任何错误由 `defer` 执行 `ROLLBACK`。逐条读取现有 `payload`：不存在则调用当前 `insert`；全部逻辑字段相同且两个时间戳在 Unix 毫秒精度相同则计为相同；不同时将本地和导入 JSON 编码后，查询同 `record_id`、同导入来源 `source_vault_id` 且两份 payload 字节都相同的现有组，只有查不到时才插入一个 group 和两个 variant。本地变体写 `localSourceVaultID`，导入变体写 `importedSourceVaultID`。返回值只统计本次实际新增的冲突。
 
 - [ ] **Step 4: 添加故障注入并验证事务回滚**
 

@@ -87,6 +87,50 @@ func deduplicatesEquivalentPendingConflict() throws {
     #expect(try fixture.repository.pendingConflictCount() == 1)
 }
 
+@Test("records that differ only below protocol millisecond precision are identical")
+func treatsSubmillisecondTimestampDifferencesAsIdentical() throws {
+    let fixture = try ImportRepositoryFixture()
+    defer { fixture.close() }
+    let base = fixture.item(title: "同一记录")
+    let local = LoginItem(
+        id: base.id,
+        title: base.title,
+        username: base.username,
+        password: base.password,
+        url: base.url,
+        category: base.category,
+        note: base.note,
+        createdAt: Date(timeIntervalSince1970: 1_760_000_000.123456),
+        updatedAt: Date(timeIntervalSince1970: 1_760_000_001.987654),
+        revision: base.revision,
+        deviceID: base.deviceID
+    )
+    let imported = LoginItem(
+        id: local.id,
+        title: local.title,
+        username: local.username,
+        password: local.password,
+        url: local.url,
+        category: local.category,
+        note: local.note,
+        createdAt: Date(timeIntervalSince1970: 1_760_000_000.123),
+        updatedAt: Date(timeIntervalSince1970: 1_760_000_001.987),
+        revision: local.revision,
+        deviceID: local.deviceID
+    )
+    try fixture.repository.create(local)
+
+    let summary = try fixture.repository.mergeImportedItems(
+        [imported],
+        importedSourceVaultID: fixture.sourceVaultID,
+        localSourceVaultID: fixture.localVaultID
+    )
+
+    #expect(summary == ImportMergeSummary(added: 0, identical: 1, conflicts: 0))
+    #expect(try fixture.repository.pendingConflictCount() == 0)
+    #expect(try fixture.repository.item(id: local.id) == local)
+}
+
 @Test("a failure before commit rolls back added records and conflicts")
 func rollsBackEntireImportMerge() throws {
     struct SyntheticFailure: Error {}
