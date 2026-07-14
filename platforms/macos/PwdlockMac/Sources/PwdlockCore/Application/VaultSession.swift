@@ -140,6 +140,21 @@ public final class VaultSession {
         }
     }
 
+    /// Authenticates and merges a portable archive into the currently unlocked vault.
+    /// Login inserts and conflict creation are committed as one database transaction.
+    public func mergeArchive(at archiveURL: URL, exportPassword: String) throws -> ImportMergeSummary {
+        guard isUnlocked else { throw VaultSessionError.locked }
+        let archiveData = try readVerifiedArchive(at: archiveURL)
+        let payload = try PwdlockArchive.import(data: archiveData, password: exportPassword)
+        let importedItems = try payload.records.map(loginItem)
+        let metadata = try metadataStore.load()
+        return try loginItemRepository().mergeImportedItems(
+            importedItems,
+            importedSourceVaultID: payload.sourceVaultId,
+            localSourceVaultID: try uuid(from: metadata.vaultID)
+        )
+    }
+
     /// Imports a verified portable archive only into an empty local vault directory.
     /// Archive authentication and strict payload validation finish before this creates
     /// any local vault files, and imported records are committed atomically.
@@ -148,26 +163,7 @@ public final class VaultSession {
         guard !fileManager.fileExists(atPath: directory.path) else { throw VaultSessionError.vaultAlreadyExists }
         guard !isUnlocked else { throw VaultSessionError.alreadyUnlocked }
 
-        let archiveData: Data
-        do {
-            let handle = try FileHandle(forReadingFrom: archiveURL)
-            defer { try? handle.close() }
-            let archiveSize = try verifiedFileSize(of: handle)
-            guard archiveSize <= PwdlockArchive.maximumFileBytes else {
-                throw PwdlockArchiveError.invalidArchive
-            }
-            archiveData = try archiveDataReader(handle, archiveSize)
-            guard archiveData.count == archiveSize,
-                  try verifiedFileSize(of: handle) == archiveSize else {
-                throw PwdlockArchiveError.invalidArchive
-            }
-        } catch let error as PwdlockArchiveError {
-            throw error
-        } catch let error as VaultSessionError {
-            throw error
-        } catch {
-            throw VaultSessionError.archiveImportFailed
-        }
+        let archiveData = try readVerifiedArchive(at: archiveURL)
 
         let payload: PwdlockPayload
         do {
@@ -335,6 +331,29 @@ public final class VaultSession {
             throw PwdlockArchiveError.invalidArchive
         }
         return Int(fileStatus.st_size)
+    }
+
+    private func readVerifiedArchive(at archiveURL: URL) throws -> Data {
+        do {
+            let handle = try FileHandle(forReadingFrom: archiveURL)
+            defer { try? handle.close() }
+            let archiveSize = try verifiedFileSize(of: handle)
+            guard archiveSize <= PwdlockArchive.maximumFileBytes else {
+                throw PwdlockArchiveError.invalidArchive
+            }
+            let archiveData = try archiveDataReader(handle, archiveSize)
+            guard archiveData.count == archiveSize,
+                  try verifiedFileSize(of: handle) == archiveSize else {
+                throw PwdlockArchiveError.invalidArchive
+            }
+            return archiveData
+        } catch let error as PwdlockArchiveError {
+            throw error
+        } catch let error as VaultSessionError {
+            throw error
+        } catch {
+            throw VaultSessionError.archiveImportFailed
+        }
     }
 
     private static func readVerifiedArchive(from handle: FileHandle, byteCount: Int) throws -> Data {

@@ -206,6 +206,33 @@ func importsPortableArchiveIntoFreshVault() throws {
     #expect(try reopened.loginItemRepository().item(id: second.id) == second)
 }
 
+@Test("unlocked vault session merges a portable archive into the existing vault")
+func importsPortableArchiveIntoUnlockedVault() throws {
+    let sourceDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let targetDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let archiveURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).pwdlock", isDirectory: false)
+    defer {
+        try? FileManager.default.removeItem(at: sourceDirectory)
+        try? FileManager.default.removeItem(at: targetDirectory)
+        try? FileManager.default.removeItem(at: archiveURL)
+    }
+    let imported = backupTestLoginItem(title: "导入登录")
+    let source = VaultSession(directory: sourceDirectory)
+    try source.create(masterPassword: "source master password")
+    try source.loginItemRepository().create(imported)
+    try source.exportArchive(to: archiveURL, exportPassword: "separate export password")
+
+    let target = VaultSession(directory: targetDirectory)
+    try target.create(masterPassword: "target master password")
+    let summary = try target.mergeArchive(
+        at: archiveURL,
+        exportPassword: "separate export password"
+    )
+
+    #expect(summary == ImportMergeSummary(added: 1, identical: 0, conflicts: 0))
+    #expect(try target.loginItemRepository().item(id: imported.id) == imported)
+}
+
 @Test("wrong archive password leaves a fresh target without a local vault")
 func wrongArchivePasswordDoesNotCreateTargetVault() throws {
     let sourceDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
