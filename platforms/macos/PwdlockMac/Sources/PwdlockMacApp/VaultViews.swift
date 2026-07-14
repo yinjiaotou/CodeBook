@@ -414,7 +414,7 @@ private struct ManualMergeView: View {
                 Spacer()
                 Button("取消") { dismiss() }
                 Button("保存合并结果") {
-                    state.mergeManually(
+                    if state.mergeManually(
                         conflictID: conflict.id,
                         merge: ManualLoginMerge(
                             title: title,
@@ -424,8 +424,9 @@ private struct ManualMergeView: View {
                             category: category,
                             note: note
                         )
-                    )
-                    dismiss()
+                    ) {
+                        dismiss()
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(title.isEmpty)

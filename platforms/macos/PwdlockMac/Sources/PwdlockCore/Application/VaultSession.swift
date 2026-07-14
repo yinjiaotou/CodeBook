@@ -393,7 +393,9 @@ public final class VaultSession {
         guard try database.scalarText("PRAGMA integrity_check") == "ok" else {
             throw VaultSessionError.backupValidationFailed
         }
-        _ = try LoginItemRepository(database: database).search(query: "")
+        let repository = LoginItemRepository(database: database)
+        _ = try repository.search(query: "")
+        _ = try repository.pendingConflicts()
     }
 
     private func isLocalBackupURL(_ url: URL) -> Bool {

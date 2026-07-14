@@ -234,7 +234,28 @@ func existingVaultImportPublishesSummary() throws {
     #expect(state.pendingConflictCount == 1)
 
     let conflict = try #require(state.pendingConflicts.first)
+    let conflictEditedLocal = LoginItem(
+        id: local.id,
+        title: "冲突后本地编辑",
+        username: local.username,
+        password: local.password,
+        url: local.url,
+        category: local.category,
+        note: local.note,
+        createdAt: local.createdAt,
+        updatedAt: local.updatedAt.addingTimeInterval(1),
+        revision: local.revision + 1,
+        deviceID: local.deviceID
+    )
+    try target.loginItemRepository().update(conflictEditedLocal)
+
     state.useImported(conflictID: conflict.id)
+
+    #expect(state.errorMessage == "本地记录已更新，请重新检查冲突。")
+    #expect(state.pendingConflicts.first?.local.item == conflictEditedLocal)
+    state.dismissError()
+    let refreshedConflict = try #require(state.pendingConflicts.first)
+    state.useImported(conflictID: refreshedConflict.id)
 
     #expect(state.pendingConflictCount == 0)
     let resolved = try #require(state.items.first(where: { $0.id == importedConflict.id }))
@@ -361,6 +382,73 @@ func libraryStateCreatesLocalBackup() throws {
     )
     #expect(backups.count == 1)
     #expect(state.errorMessage == nil)
+}
+
+@MainActor
+@Test("restoring a local backup reloads conflicts and closes the stale conflict center")
+func restoringLocalBackupReloadsConflictState() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let session = VaultSession(directory: directory)
+    try session.create(masterPassword: "correct horse battery staple")
+    let repository = try session.loginItemRepository()
+    let local = loginItem(title: "备份中的本地版本", category: "工作")
+    let imported = LoginItem(
+        id: local.id,
+        title: "备份中的导入版本",
+        username: local.username,
+        password: "imported-secret",
+        url: local.url,
+        category: local.category,
+        note: local.note,
+        createdAt: local.createdAt,
+        updatedAt: local.updatedAt,
+        revision: local.revision + 1,
+        deviceID: local.deviceID
+    )
+    try repository.create(local)
+    _ = try repository.mergeImportedItems(
+        [imported],
+        importedSourceVaultID: UUID(),
+        localSourceVaultID: UUID()
+    )
+    let state = VaultAppState(session: session)
+    let originalConflict = try #require(state.pendingConflicts.first)
+    state.createLocalBackup()
+    state.keepLocal(conflictID: originalConflict.id)
+    #expect(state.pendingConflictCount == 0)
+    state.isConflictCenterPresented = true
+
+    state.restoreLatestLocalBackup()
+
+    #expect(state.errorMessage == nil)
+    #expect(!state.isConflictCenterPresented)
+    let restoredConflict = try #require(state.pendingConflicts.first)
+    #expect(restoredConflict.local.item == local)
+    #expect(restoredConflict.imported.item == imported)
+}
+
+@MainActor
+@Test("manual conflict merge reports failure so its sheet can remain open")
+func manualConflictMergeReportsFailure() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let session = VaultSession(directory: directory)
+    try session.create(masterPassword: "correct horse battery staple")
+    let state = VaultAppState(session: session)
+    let merge = ManualLoginMerge(
+        title: "合并结果",
+        username: "user",
+        password: "secret",
+        url: "",
+        category: "",
+        note: ""
+    )
+
+    #expect(!state.mergeManually(conflictID: UUID(), merge: merge))
+    #expect(state.errorMessage == "无法处理此冲突。")
 }
 
 @MainActor

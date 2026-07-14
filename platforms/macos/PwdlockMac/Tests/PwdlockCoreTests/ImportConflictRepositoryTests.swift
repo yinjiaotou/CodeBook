@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import Testing
 @testable import PwdlockCore
 
@@ -154,6 +155,104 @@ func rollsBackEntireImportMerge() throws {
     #expect(try fixture.repository.pendingConflictCount() == 0)
 }
 
+@Test("merge rejects a database row whose embedded login ID mismatches its SQL key")
+func rejectsMismatchedStoredLoginIdentifier() throws {
+    let fixture = try ImportRepositoryFixture()
+    defer { fixture.close() }
+    let requestedID = UUID(uuidString: "11111111-1111-4111-8111-111111111111")!
+    let wrongPayloadItem = fixture.item(
+        id: UUID(uuidString: "22222222-2222-4222-8222-222222222222")!,
+        title: "损坏载荷"
+    )
+    let payload = try JSONEncoder().encode(wrongPayloadItem)
+    let payloadHex = payload.map { String(format: "%02x", $0) }.joined()
+    try fixture.database.execute(
+        "INSERT INTO login_items (id, title, payload) VALUES ('\(requestedID.uuidString)', '损坏行', X'\(payloadHex)')"
+    )
+    let imported = fixture.item(id: requestedID, title: "导入记录")
+
+    #expect(throws: LoginItemRepositoryError.self) {
+        _ = try fixture.repository.item(id: requestedID)
+    }
+    #expect(throws: LoginItemRepositoryError.self) {
+        _ = try fixture.repository.search(query: "损坏")
+    }
+    #expect(throws: LoginItemRepositoryError.self) {
+        _ = try fixture.repository.mergeImportedItems(
+            [imported],
+            importedSourceVaultID: fixture.sourceVaultID,
+            localSourceVaultID: fixture.localVaultID
+        )
+    }
+
+    #expect(try fixture.repository.pendingConflictCount() == 0)
+}
+
+@Test("pending conflict decoding rejects a variant whose embedded ID mismatches the group")
+func rejectsMismatchedConflictVariantIdentifier() throws {
+    let fixture = try ImportRepositoryFixture()
+    defer { fixture.close() }
+    _ = try fixture.createConflict()
+    let wrongItem = fixture.item(
+        id: UUID(uuidString: "33333333-3333-4333-8333-333333333333")!,
+        title: "错误冲突变体"
+    )
+    let payload = try JSONEncoder().encode(wrongItem)
+    let payloadHex = payload.map { String(format: "%02x", $0) }.joined()
+    try fixture.database.execute(
+        "UPDATE conflict_variants SET payload = X'\(payloadHex)' WHERE kind = 'imported'"
+    )
+
+    #expect(throws: LoginItemRepositoryError.self) {
+        _ = try fixture.repository.pendingConflicts()
+    }
+}
+
+@Test("database connection serializes another write across a rolling back merge transaction")
+func serializesConnectionAcrossMergeTransaction() throws {
+    struct SyntheticFailure: Error {}
+    let fixture = try ImportRepositoryFixture()
+    defer { fixture.close() }
+    let local = fixture.item(title: "本地")
+    let imported = fixture.copy(local, title: "导入")
+    let concurrent = fixture.item(title: "并发新增")
+    try fixture.repository.create(local)
+    let repository = fixture.repository
+    let sourceVaultID = fixture.sourceVaultID
+    let localVaultID = fixture.localVaultID
+    let transactionStarted = DispatchSemaphore(value: 0)
+    let allowRollback = DispatchSemaphore(value: 0)
+    let mergeFinished = DispatchSemaphore(value: 0)
+    let concurrentWriteFinished = DispatchSemaphore(value: 0)
+
+    DispatchQueue.global().async {
+        _ = try? repository.mergeImportedItems(
+            [imported],
+            importedSourceVaultID: sourceVaultID,
+            localSourceVaultID: localVaultID,
+            beforeCommit: {
+                transactionStarted.signal()
+                allowRollback.wait()
+                throw SyntheticFailure()
+            }
+        )
+        mergeFinished.signal()
+    }
+    #expect(transactionStarted.wait(timeout: .now() + 2) == .success)
+
+    DispatchQueue.global().async {
+        try? repository.create(concurrent)
+        concurrentWriteFinished.signal()
+    }
+
+    #expect(concurrentWriteFinished.wait(timeout: .now() + 0.2) == .timedOut)
+    allowRollback.signal()
+    #expect(mergeFinished.wait(timeout: .now() + 2) == .success)
+    #expect(concurrentWriteFinished.wait(timeout: .now() + 2) == .success)
+    #expect(try repository.item(id: concurrent.id) == concurrent)
+    #expect(try repository.pendingConflictCount() == 0)
+}
+
 @Test("keeping local removes the conflict without changing the active record")
 func resolvesConflictByKeepingLocal() throws {
     let fixture = try ImportRepositoryFixture()
@@ -176,6 +275,24 @@ func resolvesConflictUsingImported() throws {
 
     #expect(try fixture.repository.item(id: local.id) == imported)
     #expect(try fixture.repository.pendingConflictCount() == 0)
+}
+
+@Test("using imported refuses to overwrite a local record edited after conflict creation")
+func rejectsStaleConflictUsingImported() throws {
+    let fixture = try ImportRepositoryFixture()
+    defer { fixture.close() }
+    let (local, imported, conflict) = try fixture.createConflict(importedRevision: 8)
+    let editedLocal = fixture.copy(local, title: "冲突后编辑", revision: local.revision + 1)
+    try fixture.repository.update(editedLocal)
+
+    #expect(throws: LoginItemRepositoryError.conflictChanged) {
+        try fixture.repository.resolveUsingImported(conflictID: conflict.id)
+    }
+
+    #expect(try fixture.repository.item(id: local.id) == editedLocal)
+    let refreshed = try #require(fixture.repository.pendingConflicts().first)
+    #expect(refreshed.local.item == editedLocal)
+    #expect(refreshed.imported.item == imported)
 }
 
 @Test("manual merge preserves local identity and advances the highest revision")
@@ -209,6 +326,31 @@ func resolvesConflictManually() throws {
     #expect(result.category == merge.category)
     #expect(result.note == merge.note)
     #expect(try fixture.repository.pendingConflictCount() == 0)
+}
+
+@Test("manual merge refuses to overwrite a local record edited after conflict creation")
+func rejectsStaleConflictManualMerge() throws {
+    let fixture = try ImportRepositoryFixture()
+    defer { fixture.close() }
+    let (local, _, conflict) = try fixture.createConflict(importedRevision: 8)
+    let editedLocal = fixture.copy(local, title: "冲突后编辑", revision: 20)
+    try fixture.repository.update(editedLocal)
+    let merge = ManualLoginMerge(
+        title: "旧界面合并值",
+        username: local.username,
+        password: local.password,
+        url: local.url,
+        category: local.category,
+        note: local.note
+    )
+
+    #expect(throws: LoginItemRepositoryError.conflictChanged) {
+        try fixture.repository.resolveManually(conflictID: conflict.id, merge: merge)
+    }
+
+    #expect(try fixture.repository.item(id: local.id) == editedLocal)
+    let refreshed = try #require(fixture.repository.pendingConflicts().first)
+    #expect(refreshed.local.item == editedLocal)
 }
 
 private final class ImportRepositoryFixture {

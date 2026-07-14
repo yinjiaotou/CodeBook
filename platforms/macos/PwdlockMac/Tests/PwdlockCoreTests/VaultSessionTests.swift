@@ -485,6 +485,47 @@ func rejectsValidlyEncryptedBackupWithInvalidLoginSchema() throws {
     #expect(try session.loginItemRepository().item(id: current.id) == current)
 }
 
+@Test("encrypted backup with a malformed conflict variant does not replace current vault data")
+func rejectsValidlyEncryptedBackupWithMalformedConflictPayload() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let masterPassword = "correct horse battery staple"
+    let created = try VaultBootstrap.create(masterPassword: masterPassword)
+    try VaultMetadataStore(directory: directory).save(created.metadata)
+
+    let backupsDirectory = directory.appendingPathComponent("Backups", isDirectory: true)
+    try FileManager.default.createDirectory(at: backupsDirectory, withIntermediateDirectories: true)
+    let invalidBackup = backupsDirectory.appendingPathComponent("invalid-conflict.db", isDirectory: false)
+    let invalidDatabase = try EncryptedDatabase.open(at: invalidBackup, vaultKey: created.vaultKey)
+    let invalidRepository = LoginItemRepository(database: invalidDatabase)
+    try invalidRepository.migrate()
+    let groupID = UUID()
+    let recordID = UUID()
+    try invalidDatabase.execute(
+        "INSERT INTO conflict_groups (id, record_id, title, created_at_ms, state) "
+            + "VALUES ('\(groupID.uuidString)', '\(recordID.uuidString)', '损坏冲突', 1760000000000, 'pending')"
+    )
+    for kind in ["local", "imported"] {
+        try invalidDatabase.execute(
+            "INSERT INTO conflict_variants (id, group_id, kind, source_vault_id, payload) "
+                + "VALUES ('\(UUID().uuidString)', '\(groupID.uuidString)', '\(kind)', '\(UUID().uuidString)', X'00')"
+        )
+    }
+    invalidDatabase.close()
+
+    let session = VaultSession(directory: directory)
+    try session.unlock(masterPassword: masterPassword)
+    let current = backupTestLoginItem(title: "Current login")
+    try session.loginItemRepository().create(current)
+
+    #expect(throws: VaultSessionError.backupValidationFailed) {
+        try session.restoreLocalBackup(at: invalidBackup)
+    }
+    #expect(session.isUnlocked)
+    #expect(try session.loginItemRepository().item(id: current.id) == current)
+}
+
 @Test("locked vault session rejects local backup and restore")
 func rejectsLocalBackupOperationsWhileLocked() throws {
     let session = VaultSession(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))

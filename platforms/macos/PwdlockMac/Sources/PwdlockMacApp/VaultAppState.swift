@@ -194,33 +194,44 @@ final class VaultAppState: ObservableObject {
         }
     }
 
-    func useImported(conflictID: UUID) {
+    @discardableResult
+    func useImported(conflictID: UUID) -> Bool {
         performConflictAction {
             try session.loginItemRepository().resolveUsingImported(conflictID: conflictID)
         }
     }
 
-    func keepLocal(conflictID: UUID) {
+    @discardableResult
+    func keepLocal(conflictID: UUID) -> Bool {
         performConflictAction {
             try session.loginItemRepository().resolveKeepingLocal(conflictID: conflictID)
         }
     }
 
-    func mergeManually(conflictID: UUID, merge: ManualLoginMerge) {
+    @discardableResult
+    func mergeManually(conflictID: UUID, merge: ManualLoginMerge) -> Bool {
         performConflictAction {
             try session.loginItemRepository().resolveManually(conflictID: conflictID, merge: merge)
         }
     }
 
-    private func performConflictAction(_ action: () throws -> Void) {
+    private func performConflictAction(_ action: () throws -> Void) -> Bool {
         do {
             try action()
             errorMessage = nil
             reloadItems()
             reloadConflicts()
             recordActivity()
+            return true
+        } catch LoginItemRepositoryError.conflictChanged {
+            reloadItems()
+            reloadConflicts()
+            errorMessage = "本地记录已更新，请重新检查冲突。"
+            recordActivity()
+            return false
         } catch {
             errorMessage = "无法处理此冲突。"
+            return false
         }
     }
 
@@ -295,13 +306,17 @@ final class VaultAppState: ObservableObject {
     }
 
     func restoreLatestLocalBackup() {
+        isConflictCenterPresented = false
+        pendingConflicts = []
         do {
             try session.restoreLatestLocalBackup()
             selectedItem = nil
             isPasswordRevealed = false
             reloadItems()
+            reloadConflicts()
             recordActivity()
         } catch {
+            reloadConflicts()
             errorMessage = "无法恢复最新本地备份。"
         }
     }
