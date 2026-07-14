@@ -7,11 +7,19 @@ public enum BiometricAuthenticationResult: Equatable, Sendable {
     case failed
 }
 
+public final class BiometricAuthenticationContext: @unchecked Sendable {
+    public let localAuthenticationContext: LAContext
+
+    public init(localAuthenticationContext: LAContext) {
+        self.localAuthenticationContext = localAuthenticationContext
+    }
+}
+
 public protocol BiometricAuthenticating: AnyObject, Sendable {
     var isTouchIDAvailable: Bool { get }
     func authenticate(
         reason: String,
-        completion: @escaping @Sendable (BiometricAuthenticationResult, LAContext?) -> Void
+        completion: @escaping @Sendable (BiometricAuthenticationResult, BiometricAuthenticationContext?) -> Void
     )
     func cancel()
 }
@@ -31,7 +39,7 @@ public final class LocalAuthenticationAuthenticator: BiometricAuthenticating, @u
 
     public func authenticate(
         reason: String,
-        completion: @escaping @Sendable (BiometricAuthenticationResult, LAContext?) -> Void
+        completion: @escaping @Sendable (BiometricAuthenticationResult, BiometricAuthenticationContext?) -> Void
     ) {
         let context = LAContext()
         var evaluationError: NSError?
@@ -46,7 +54,10 @@ public final class LocalAuthenticationAuthenticator: BiometricAuthenticating, @u
             [weak self] success, error in
             self?.clearCurrentContext(ifSameAs: context)
             if success {
-                completion(.success, context)
+                completion(
+                    .success,
+                    BiometricAuthenticationContext(localAuthenticationContext: context)
+                )
             } else if Self.isCancellation(error) {
                 completion(.cancelled, nil)
             } else {

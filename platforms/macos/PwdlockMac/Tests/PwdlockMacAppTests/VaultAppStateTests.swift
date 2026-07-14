@@ -1,7 +1,160 @@
 import Foundation
+import LocalAuthentication
 import Testing
 @testable import PwdlockMacApp
 @testable import PwdlockCore
+
+@MainActor
+@Test("unlock screen automatically offers Touch ID only once per lock cycle")
+func automaticallyPromptsTouchIDOnce() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let keyStore = AppTestBiometricKeyStore()
+    let password = "correct horse battery staple"
+    let session = VaultSession(
+        directory: directory,
+        biometricKeyStore: keyStore,
+        randomBytes: { Data(repeating: 0x44, count: $0) }
+    )
+    try session.create(masterPassword: password)
+    session.lock()
+    try session.unlock(masterPassword: password)
+    try session.enableBiometricUnlock()
+    session.lock()
+    let authenticator = ManualBiometricAuthenticator(available: true)
+    let state = VaultAppState(
+        session: session,
+        scheduler: ManualAppScheduler(),
+        clipboard: RecordingClipboard(),
+        biometricAuthenticator: authenticator
+    )
+
+    state.beginUnlockScreenIfNeeded()
+    state.beginUnlockScreenIfNeeded()
+    #expect(authenticator.requestCount == 1)
+    #expect(state.isTouchIDAuthenticating)
+    authenticator.complete(.cancelled)
+    await Task.yield()
+
+    #expect(state.screen == .unlock)
+    #expect(state.canUseTouchID)
+    #expect(!state.isTouchIDAuthenticating)
+    #expect(state.errorMessage == nil)
+    state.retryTouchID()
+    #expect(authenticator.requestCount == 2)
+}
+
+@MainActor
+@Test("successful Touch ID authentication opens the configured vault")
+func successfulTouchIDOpensVault() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let keyStore = AppTestBiometricKeyStore()
+    let password = "correct horse battery staple"
+    let session = VaultSession(
+        directory: directory,
+        biometricKeyStore: keyStore,
+        randomBytes: { Data(repeating: 0x45, count: $0) }
+    )
+    try session.create(masterPassword: password)
+    try session.loginItemRepository().create(loginItem(title: "Touch ID 条目", category: "工作"))
+    session.lock()
+    try session.unlock(masterPassword: password)
+    try session.enableBiometricUnlock()
+    session.lock()
+    let authenticator = ManualBiometricAuthenticator(available: true)
+    let state = VaultAppState(
+        session: session,
+        scheduler: ManualAppScheduler(),
+        clipboard: RecordingClipboard(),
+        biometricAuthenticator: authenticator
+    )
+
+    state.beginUnlockScreenIfNeeded()
+    authenticator.complete(.success)
+    await Task.yield()
+
+    #expect(state.screen == .library)
+    #expect(session.unlockMethod == .biometric)
+    #expect(state.items.map(\.title) == ["Touch ID 条目"])
+    #expect(state.errorMessage == nil)
+}
+
+@MainActor
+@Test("failed Touch ID keeps the master-password unlock path available")
+func failedTouchIDPreservesMasterPasswordUnlock() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let keyStore = AppTestBiometricKeyStore()
+    let password = "correct horse battery staple"
+    let session = VaultSession(
+        directory: directory,
+        biometricKeyStore: keyStore,
+        randomBytes: { Data(repeating: 0x46, count: $0) }
+    )
+    try session.create(masterPassword: password)
+    session.lock()
+    try session.unlock(masterPassword: password)
+    try session.enableBiometricUnlock()
+    session.lock()
+    let authenticator = ManualBiometricAuthenticator(available: true)
+    let state = VaultAppState(
+        session: session,
+        scheduler: ManualAppScheduler(),
+        clipboard: RecordingClipboard(),
+        biometricAuthenticator: authenticator
+    )
+
+    state.beginUnlockScreenIfNeeded()
+    authenticator.complete(.failed)
+    await Task.yield()
+
+    #expect(state.screen == .unlock)
+    #expect(state.errorMessage == "Touch ID 无法完成验证，请使用主密码。")
+    state.unlock(masterPassword: password)
+    #expect(state.screen == .library)
+    #expect(session.unlockMethod == .masterPassword)
+}
+
+@MainActor
+@Test("backgrounding cancels an active Touch ID attempt and ignores its late result")
+func backgroundCancelsTouchIDAttempt() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let keyStore = AppTestBiometricKeyStore()
+    let password = "correct horse battery staple"
+    let session = VaultSession(
+        directory: directory,
+        biometricKeyStore: keyStore,
+        randomBytes: { Data(repeating: 0x47, count: $0) }
+    )
+    try session.create(masterPassword: password)
+    session.lock()
+    try session.unlock(masterPassword: password)
+    try session.enableBiometricUnlock()
+    session.lock()
+    let authenticator = ManualBiometricAuthenticator(available: true)
+    let state = VaultAppState(
+        session: session,
+        scheduler: ManualAppScheduler(),
+        clipboard: RecordingClipboard(),
+        biometricAuthenticator: authenticator
+    )
+    state.beginUnlockScreenIfNeeded()
+
+    state.applicationDidEnterBackground()
+    authenticator.complete(.success)
+    await Task.yield()
+
+    #expect(authenticator.cancelCount == 1)
+    #expect(!state.isTouchIDAuthenticating)
+    #expect(state.screen == .unlock)
+    #expect(!session.isUnlocked)
+}
 
 @MainActor
 @Test("vault creation requires a master password with at least 12 Unicode characters")
@@ -882,5 +1035,57 @@ private final class ManualUnlockClock {
 
     func advance(by interval: TimeInterval) {
         now.addTimeInterval(interval)
+    }
+}
+
+private final class ManualBiometricAuthenticator: BiometricAuthenticating, @unchecked Sendable {
+    let isTouchIDAvailable: Bool
+    private(set) var requestCount = 0
+    private(set) var cancelCount = 0
+    private var completion: (@Sendable (BiometricAuthenticationResult, BiometricAuthenticationContext?) -> Void)?
+
+    init(available: Bool) {
+        isTouchIDAvailable = available
+    }
+
+    func authenticate(
+        reason: String,
+        completion: @escaping @Sendable (BiometricAuthenticationResult, BiometricAuthenticationContext?) -> Void
+    ) {
+        requestCount += 1
+        self.completion = completion
+    }
+
+    func cancel() {
+        cancelCount += 1
+        completion = nil
+    }
+
+    func complete(_ result: BiometricAuthenticationResult, context: BiometricAuthenticationContext? = nil) {
+        let completion = completion
+        self.completion = nil
+        completion?(result, context)
+    }
+}
+
+private final class AppTestBiometricKeyStore: BiometricKeyStoring, @unchecked Sendable {
+    private var keys: [UUID: Data] = [:]
+
+    func create(_ key: Data, vaultID: UUID) throws {
+        guard keys[vaultID] == nil else { throw BiometricKeyStoreError.duplicate }
+        keys[vaultID] = key
+    }
+
+    func read(vaultID: UUID, context: LAContext?) throws -> Data {
+        guard let key = keys[vaultID] else { throw BiometricKeyStoreError.notFound }
+        return key
+    }
+
+    func delete(vaultID: UUID) throws {
+        keys[vaultID] = nil
+    }
+
+    func contains(vaultID: UUID) -> Bool {
+        keys[vaultID] != nil
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+@preconcurrency import LocalAuthentication
 import PwdlockCore
 
 enum VaultScreen: Equatable {
@@ -42,6 +43,9 @@ final class VaultAppState: ObservableObject {
     @Published var isExistingVaultImportPresented = false
     @Published var isConflictCenterPresented = false
     @Published private(set) var pendingConflicts: [ImportConflict] = []
+    @Published private(set) var canUseTouchID = false
+    @Published private(set) var isTouchIDEnabled = false
+    @Published private(set) var isTouchIDAuthenticating = false
 
     var pendingConflictCount: Int { pendingConflicts.count }
 
@@ -53,7 +57,10 @@ final class VaultAppState: ObservableObject {
     private var clipboardExpiry: Date?
     private let unlockRateLimiter: UnlockRateLimiter
     private let userDefaults: UserDefaults
+    private let biometricAuthenticator: any BiometricAuthenticating
     private var allItems: [LoginItem] = []
+    private var didAutomaticallyPromptTouchID = false
+    private var touchIDAttemptID: UUID?
 
     convenience init(directory: URL = VaultAppState.defaultVaultDirectory()) {
         self.init(session: VaultSession(directory: directory))
@@ -71,6 +78,7 @@ final class VaultAppState: ObservableObject {
         session: VaultSession,
         scheduler: S,
         clipboard: C,
+        biometricAuthenticator: any BiometricAuthenticating = LocalAuthenticationAuthenticator(),
         unlockRateLimiter: UnlockRateLimiter = UnlockRateLimiter(),
         userDefaults: UserDefaults = .standard,
         now: @escaping () -> Date = { Date() }
@@ -81,6 +89,7 @@ final class VaultAppState: ObservableObject {
         self.now = now
         self.unlockRateLimiter = unlockRateLimiter
         self.userDefaults = userDefaults
+        self.biometricAuthenticator = biometricAuthenticator
         let storedValue = userDefaults.object(forKey: AutoLockDuration.defaultsKey)
         let storedTimeout = storedValue as? Int
         autoLockDuration = AutoLockDuration(rawValue: storedTimeout ?? AutoLockDuration.fiveMinutes.rawValue)
@@ -101,6 +110,7 @@ final class VaultAppState: ObservableObject {
             reloadItems()
             reloadConflicts()
         }
+        refreshTouchIDState()
     }
 
     func createVault(masterPassword: String, confirmation: String) {
@@ -119,6 +129,7 @@ final class VaultAppState: ObservableObject {
             screen = .library
             reloadItems()
             reloadConflicts()
+            refreshTouchIDState()
             recordActivity()
         } catch {
             errorMessage = "无法创建密码库。"
@@ -158,6 +169,7 @@ final class VaultAppState: ObservableObject {
             operationSummary = "已导入 \(try session.loginItemRepository().search(query: "").count) 个登录项。"
             screen = .library
             reloadItems()
+            refreshTouchIDState()
             recordActivity()
         } catch {
             operationSummary = nil
@@ -267,10 +279,7 @@ final class VaultAppState: ObservableObject {
             try session.unlock(masterPassword: masterPassword)
             unlockRateLimiter.recordSuccessfulUnlock()
             errorMessage = nil
-            screen = .library
-            reloadItems()
-            reloadConflicts()
-            recordActivity()
+            finishUnlock()
         } catch {
             unlockRateLimiter.recordFailedUnlock()
             errorMessage = "无法解锁密码库。"
@@ -290,6 +299,7 @@ final class VaultAppState: ObservableObject {
         do {
             try session.changeMasterPassword(currentPassword: currentPassword, newPassword: newPassword)
             errorMessage = nil
+            refreshTouchIDState()
         } catch {
             errorMessage = "无法更改主密码。"
         }
@@ -333,6 +343,9 @@ final class VaultAppState: ObservableObject {
     }
 
     func applicationDidEnterBackground() {
+        biometricAuthenticator.cancel()
+        touchIDAttemptID = nil
+        isTouchIDAuthenticating = false
         autoLockController?.applicationDidEnterBackground()
     }
 
@@ -372,7 +385,96 @@ final class VaultAppState: ObservableObject {
         isExistingVaultImportPresented = false
         isConflictCenterPresented = false
         pendingConflicts = []
+        touchIDAttemptID = nil
+        isTouchIDAuthenticating = false
+        didAutomaticallyPromptTouchID = false
         screen = .unlock
+        refreshTouchIDState()
+    }
+
+    func beginUnlockScreenIfNeeded() {
+        refreshTouchIDState()
+        guard screen == .unlock,
+              canUseTouchID,
+              !didAutomaticallyPromptTouchID,
+              !isTouchIDAuthenticating else { return }
+        didAutomaticallyPromptTouchID = true
+        requestTouchIDUnlock()
+    }
+
+    func retryTouchID() {
+        refreshTouchIDState()
+        guard screen == .unlock, canUseTouchID, !isTouchIDAuthenticating else { return }
+        requestTouchIDUnlock()
+    }
+
+    func setTouchIDEnabled(_ enabled: Bool) {
+        guard screen == .library else { return }
+        do {
+            if enabled {
+                try session.enableBiometricUnlock()
+            } else {
+                try session.disableBiometricUnlock()
+            }
+            errorMessage = nil
+        } catch VaultSessionError.masterPasswordUnlockRequired {
+            errorMessage = "请先使用主密码解锁后再启用 Touch ID。"
+        } catch {
+            errorMessage = enabled ? "无法启用 Touch ID 快捷解锁。" : "无法关闭 Touch ID 快捷解锁。"
+        }
+        refreshTouchIDState()
+        recordActivity()
+    }
+
+    private func requestTouchIDUnlock() {
+        let attemptID = UUID()
+        touchIDAttemptID = attemptID
+        isTouchIDAuthenticating = true
+        biometricAuthenticator.authenticate(reason: "使用 Touch ID 解锁密码库") { [weak self] result, context in
+            Task { @MainActor [weak self] in
+                self?.finishTouchIDAttempt(id: attemptID, result: result, context: context)
+            }
+        }
+    }
+
+    private func finishTouchIDAttempt(
+        id: UUID,
+        result: BiometricAuthenticationResult,
+        context: BiometricAuthenticationContext?
+    ) {
+        guard touchIDAttemptID == id else { return }
+        touchIDAttemptID = nil
+        isTouchIDAuthenticating = false
+        switch result {
+        case .cancelled:
+            return
+        case .failed:
+            errorMessage = "Touch ID 无法完成验证，请使用主密码。"
+        case .success:
+            do {
+                try session.unlockWithBiometrics(context: context?.localAuthenticationContext)
+                errorMessage = nil
+                finishUnlock()
+            } catch {
+                errorMessage = "Touch ID 无法完成验证，请使用主密码。"
+                refreshTouchIDState()
+            }
+        }
+    }
+
+    private func finishUnlock() {
+        screen = .library
+        reloadItems()
+        reloadConflicts()
+        refreshTouchIDState()
+        recordActivity()
+    }
+
+    private func refreshTouchIDState() {
+        isTouchIDEnabled = session.isBiometricUnlockConfigured
+        canUseTouchID = screen == .unlock
+            && biometricAuthenticator.isTouchIDAvailable
+            && isTouchIDEnabled
     }
 
     func selectItem(id: UUID?) {
