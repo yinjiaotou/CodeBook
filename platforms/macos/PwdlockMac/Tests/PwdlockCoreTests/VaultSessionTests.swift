@@ -1,6 +1,172 @@
 import Foundation
+import LocalAuthentication
 import Testing
 @testable import PwdlockCore
+
+@Test("only a master-password session can enable and rebuild Touch ID unlock")
+func enablesBiometricUnlockAfterMasterPassword() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let password = "correct horse battery staple"
+    let keyStore = SessionTestBiometricKeyStore()
+    let session = VaultSession(
+        directory: directory,
+        biometricKeyStore: keyStore,
+        randomBytes: { Data(repeating: 0x5a, count: $0) }
+    )
+    try session.create(masterPassword: password)
+    session.lock()
+    try session.unlock(masterPassword: password)
+
+    try session.enableBiometricUnlock()
+
+    #expect(session.unlockMethod == .masterPassword)
+    #expect(session.isBiometricUnlockConfigured)
+    #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("vault.biometric").path))
+    session.lock()
+    try session.unlockWithBiometrics(context: nil)
+    #expect(session.unlockMethod == .biometric)
+    #expect(throws: VaultSessionError.masterPasswordUnlockRequired) {
+        try session.enableBiometricUnlock()
+    }
+
+    try session.disableBiometricUnlock()
+    #expect(!session.isBiometricUnlockConfigured)
+    #expect(!keyStore.containsAnyKey)
+    #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("vault.biometric").path))
+}
+
+@Test("damaged biometric material is removed while the vault remains locked")
+func damagedBiometricMaterialFailsClosed() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let password = "correct horse battery staple"
+    let keyStore = SessionTestBiometricKeyStore()
+    let session = VaultSession(
+        directory: directory,
+        biometricKeyStore: keyStore,
+        randomBytes: { Data(repeating: 0x33, count: $0) }
+    )
+    try session.create(masterPassword: password)
+    session.lock()
+    try session.unlock(masterPassword: password)
+    try session.enableBiometricUnlock()
+    session.lock()
+    let envelopeURL = directory.appendingPathComponent("vault.biometric")
+    var damaged = try Data(contentsOf: envelopeURL)
+    damaged[40] ^= 0xff
+    try damaged.write(to: envelopeURL)
+
+    #expect(throws: VaultSessionError.biometricUnlockFailed) {
+        try session.unlockWithBiometrics(context: nil)
+    }
+
+    #expect(!session.isUnlocked)
+    #expect(!session.isBiometricUnlockConfigured)
+    #expect(!keyStore.containsAnyKey)
+    #expect(!FileManager.default.fileExists(atPath: envelopeURL.path))
+}
+
+@Test("changing the master password removes biometric unlock material")
+func changingMasterPasswordDisablesBiometricUnlock() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let keyStore = SessionTestBiometricKeyStore()
+    let session = VaultSession(
+        directory: directory,
+        biometricKeyStore: keyStore,
+        randomBytes: { Data(repeating: 0x66, count: $0) }
+    )
+    let oldPassword = "correct horse battery staple"
+    let newPassword = "new correct horse battery staple"
+    try session.create(masterPassword: oldPassword)
+    session.lock()
+    try session.unlock(masterPassword: oldPassword)
+    try session.enableBiometricUnlock()
+
+    try session.changeMasterPassword(currentPassword: oldPassword, newPassword: newPassword)
+
+    #expect(!session.isBiometricUnlockConfigured)
+    #expect(!keyStore.containsAnyKey)
+    #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("vault.biometric").path))
+    session.lock()
+    try session.unlock(masterPassword: newPassword)
+    #expect(session.unlockMethod == .masterPassword)
+}
+
+@Test("failed biometric setup removes a Keychain key created earlier in the operation")
+func failedBiometricSetupRollsBackMaterial() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let keyStore = SessionTestBiometricKeyStore()
+    let session = VaultSession(
+        directory: directory,
+        biometricKeyStore: keyStore,
+        randomBytes: { count in Data(repeating: 0x77, count: count == 12 ? 11 : count) }
+    )
+    let password = "correct horse battery staple"
+    try session.create(masterPassword: password)
+    session.lock()
+    try session.unlock(masterPassword: password)
+
+    #expect(throws: VaultSessionError.biometricSetupFailed) {
+        try session.enableBiometricUnlock()
+    }
+
+    #expect(!session.isBiometricUnlockConfigured)
+    #expect(!keyStore.containsAnyKey)
+    #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("vault.biometric").path))
+}
+
+@Test("local backup and portable export do not transfer biometric unlock material")
+func backupAndArchiveExcludeBiometricMaterial() throws {
+    let sourceDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let targetDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let archiveURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("\(UUID().uuidString).pwdlock")
+    defer {
+        try? FileManager.default.removeItem(at: sourceDirectory)
+        try? FileManager.default.removeItem(at: targetDirectory)
+        try? FileManager.default.removeItem(at: archiveURL)
+    }
+    let sourceKeyStore = SessionTestBiometricKeyStore()
+    let source = VaultSession(
+        directory: sourceDirectory,
+        biometricKeyStore: sourceKeyStore,
+        randomBytes: { Data(repeating: 0x22, count: $0) }
+    )
+    let password = "correct horse battery staple"
+    try source.create(masterPassword: password)
+    source.lock()
+    try source.unlock(masterPassword: password)
+    try source.enableBiometricUnlock()
+
+    let backupURL = try source.createLocalBackup()
+    try source.exportArchive(to: archiveURL, exportPassword: "separate export password")
+
+    #expect(FileManager.default.fileExists(atPath: sourceDirectory.appendingPathComponent("vault.biometric").path))
+    #expect(backupURL.deletingLastPathComponent().lastPathComponent == "Backups")
+    #expect(
+        try FileManager.default.contentsOfDirectory(atPath: backupURL.deletingLastPathComponent().path)
+            == [backupURL.lastPathComponent]
+    )
+    let targetKeyStore = SessionTestBiometricKeyStore()
+    let target = VaultSession(directory: targetDirectory, biometricKeyStore: targetKeyStore)
+    try target.importArchive(
+        at: archiveURL,
+        exportPassword: "separate export password",
+        newMasterPassword: "target correct horse battery staple"
+    )
+    #expect(!target.isBiometricUnlockConfigured)
+    #expect(!targetKeyStore.containsAnyKey)
+    #expect(!FileManager.default.fileExists(atPath: targetDirectory.appendingPathComponent("vault.biometric").path))
+}
 
 @Test("vault session rejects a master password shorter than 12 Unicode characters during creation")
 func rejectsShortMasterPasswordDuringCreation() throws {
@@ -552,4 +718,28 @@ private func backupTestLoginItem(title: String) -> LoginItem {
         revision: 0,
         deviceID: UUID()
     )
+}
+
+private final class SessionTestBiometricKeyStore: BiometricKeyStoring, @unchecked Sendable {
+    private var keys: [UUID: Data] = [:]
+
+    var containsAnyKey: Bool { !keys.isEmpty }
+
+    func create(_ key: Data, vaultID: UUID) throws {
+        guard keys[vaultID] == nil else { throw BiometricKeyStoreError.duplicate }
+        keys[vaultID] = key
+    }
+
+    func read(vaultID: UUID, context: LAContext?) throws -> Data {
+        guard let key = keys[vaultID] else { throw BiometricKeyStoreError.notFound }
+        return key
+    }
+
+    func delete(vaultID: UUID) throws {
+        keys[vaultID] = nil
+    }
+
+    func contains(vaultID: UUID) -> Bool {
+        keys[vaultID] != nil
+    }
 }

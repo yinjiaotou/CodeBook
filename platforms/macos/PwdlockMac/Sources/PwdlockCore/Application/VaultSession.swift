@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+@preconcurrency import LocalAuthentication
 
 public enum VaultSessionError: Error, Equatable {
     case vaultAlreadyExists
@@ -12,23 +13,38 @@ public enum VaultSessionError: Error, Equatable {
     case restoreFailed
     case archiveExportFailed
     case archiveImportFailed
+    case masterPasswordUnlockRequired
+    case biometricSetupFailed
+    case biometricUnlockFailed
+    case biometricCleanupFailed
+}
+
+public enum VaultUnlockMethod: Equatable, Sendable {
+    case masterPassword
+    case biometric
 }
 
 public final class VaultSession {
     public typealias ArchiveDataReader = (FileHandle, Int) throws -> Data
     public typealias StagedVaultPublisher = (URL, URL) throws -> Void
+    public typealias RandomBytes = (Int) throws -> Data
 
     public let directory: URL
     private let metadataStore: VaultMetadataStore
     private let archiveDataReader: ArchiveDataReader
     private let stagedVaultPublisher: StagedVaultPublisher
+    private let biometricKeyStore: any BiometricKeyStoring
+    private let randomBytes: RandomBytes
     private var database: EncryptedDatabase?
     private var vaultKey: Data?
+    public private(set) var unlockMethod: VaultUnlockMethod?
 
     public init(
         directory: URL,
         archiveDataReader: ArchiveDataReader? = nil,
-        stagedVaultPublisher: StagedVaultPublisher? = nil
+        stagedVaultPublisher: StagedVaultPublisher? = nil,
+        biometricKeyStore: any BiometricKeyStoring = KeychainBiometricKeyStore(),
+        randomBytes: @escaping RandomBytes = { try SecureRandom.bytes(count: $0) }
     ) {
         self.directory = directory
         self.metadataStore = VaultMetadataStore(directory: directory)
@@ -38,6 +54,8 @@ public final class VaultSession {
         self.stagedVaultPublisher = stagedVaultPublisher ?? { stagingURL, targetURL in
             try VaultSession.publishStagedVault(from: stagingURL, to: targetURL)
         }
+        self.biometricKeyStore = biometricKeyStore
+        self.randomBytes = randomBytes
     }
 
     deinit {
@@ -61,6 +79,7 @@ public final class VaultSession {
         try metadataStore.save(created.metadata)
         database = try openDatabase(vaultKey: created.vaultKey)
         vaultKey = created.vaultKey
+        unlockMethod = .masterPassword
     }
 
     public func unlock(masterPassword: String) throws {
@@ -70,6 +89,7 @@ public final class VaultSession {
         let unlockedVaultKey = try VaultKeyEnvelope.unwrap(metadata, masterPassword: masterPassword)
         database = try openDatabase(vaultKey: unlockedVaultKey)
         vaultKey = unlockedVaultKey
+        unlockMethod = .masterPassword
     }
 
     public func changeMasterPassword(currentPassword: String, newPassword: String) throws {
@@ -93,12 +113,108 @@ public final class VaultSession {
             )
         )
         try metadataStore.save(replacementMetadata)
+        do {
+            try disableBiometricUnlock()
+        } catch {
+            throw VaultSessionError.biometricCleanupFailed
+        }
     }
 
     public func lock() {
         database?.close()
         database = nil
         clearRetainedVaultKey()
+        unlockMethod = nil
+    }
+
+    public var isBiometricUnlockConfigured: Bool {
+        guard let vaultID = try? biometricVaultID() else { return false }
+        return biometricKeyStore.contains(vaultID: vaultID)
+            && FileManager.default.fileExists(atPath: biometricEnvelopeURL.path)
+    }
+
+    public func enableBiometricUnlock() throws {
+        guard isUnlocked, unlockMethod == .masterPassword, let vaultKey else {
+            throw VaultSessionError.masterPasswordUnlockRequired
+        }
+        let vaultID: UUID
+        do {
+            vaultID = try biometricVaultID()
+        } catch {
+            throw VaultSessionError.biometricSetupFailed
+        }
+
+        var wrappingKey: Data
+        let nonce: Data
+        do {
+            wrappingKey = try randomBytes(32)
+            nonce = try randomBytes(12)
+        } catch {
+            throw VaultSessionError.biometricSetupFailed
+        }
+        defer { wrappingKey.resetBytes(in: 0..<wrappingKey.count) }
+        do {
+            try biometricKeyStore.create(wrappingKey, vaultID: vaultID)
+            let envelope = try BiometricVaultEnvelope.seal(
+                vaultKey: vaultKey,
+                wrappingKey: wrappingKey,
+                vaultID: vaultID,
+                nonce: nonce
+            )
+            try BiometricVaultEnvelope.saveAtomically(envelope, to: biometricEnvelopeURL)
+        } catch {
+            try? biometricKeyStore.delete(vaultID: vaultID)
+            try? FileManager.default.removeItem(at: biometricEnvelopeURL)
+            throw VaultSessionError.biometricSetupFailed
+        }
+    }
+
+    public func disableBiometricUnlock() throws {
+        let vaultID: UUID
+        do {
+            vaultID = try biometricVaultID()
+        } catch {
+            throw VaultSessionError.biometricCleanupFailed
+        }
+
+        var cleanupFailed = false
+        do {
+            try biometricKeyStore.delete(vaultID: vaultID)
+        } catch {
+            cleanupFailed = true
+        }
+        do {
+            if FileManager.default.fileExists(atPath: biometricEnvelopeURL.path) {
+                try FileManager.default.removeItem(at: biometricEnvelopeURL)
+            }
+        } catch {
+            cleanupFailed = true
+        }
+        if cleanupFailed {
+            throw VaultSessionError.biometricCleanupFailed
+        }
+    }
+
+    public func unlockWithBiometrics(context: LAContext?) throws {
+        guard !isUnlocked else { throw VaultSessionError.alreadyUnlocked }
+        do {
+            let vaultID = try biometricVaultID()
+            var wrappingKey = try biometricKeyStore.read(vaultID: vaultID, context: context)
+            defer { wrappingKey.resetBytes(in: 0..<wrappingKey.count) }
+            let envelope = try Data(contentsOf: biometricEnvelopeURL)
+            var unlockedVaultKey = try BiometricVaultEnvelope.open(
+                envelope,
+                wrappingKey: wrappingKey,
+                expectedVaultID: vaultID
+            )
+            defer { unlockedVaultKey.resetBytes(in: 0..<unlockedVaultKey.count) }
+            database = try openDatabase(vaultKey: unlockedVaultKey)
+            vaultKey = Data(unlockedVaultKey)
+            unlockMethod = .biometric
+        } catch {
+            try? disableBiometricUnlock()
+            throw VaultSessionError.biometricUnlockFailed
+        }
     }
 
     public func loginItemRepository() throws -> LoginItemRepository {
@@ -202,6 +318,7 @@ public final class VaultSession {
             try stagedVaultPublisher(stagingDirectory, directory)
             database = try openDatabase(vaultKey: importedVaultKey)
             vaultKey = importedVaultKey
+            unlockMethod = .masterPassword
         } catch let error as VaultSessionError {
             throw error
         } catch {
@@ -463,6 +580,14 @@ public final class VaultSession {
         guard let vaultKey else { return }
         self.vaultKey?.resetBytes(in: 0..<vaultKey.count)
         self.vaultKey = nil
+    }
+
+    private var biometricEnvelopeURL: URL {
+        directory.appendingPathComponent("vault.biometric", isDirectory: false)
+    }
+
+    private func biometricVaultID() throws -> UUID {
+        try uuid(from: metadataStore.load().vaultID)
     }
 
     private func pwdlockRecord(_ item: LoginItem) throws -> PwdlockRecord {
