@@ -118,6 +118,7 @@ final class VaultAppState: ObservableObject {
             errorMessage = nil
             screen = .library
             reloadItems()
+            reloadConflicts()
             recordActivity()
         } catch {
             errorMessage = "无法创建密码库。"
@@ -253,6 +254,7 @@ final class VaultAppState: ObservableObject {
             errorMessage = nil
             screen = .library
             reloadItems()
+            reloadConflicts()
             recordActivity()
         } catch {
             unlockRateLimiter.recordFailedUnlock()

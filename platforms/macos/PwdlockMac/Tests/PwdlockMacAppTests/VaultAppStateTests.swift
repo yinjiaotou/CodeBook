@@ -228,6 +228,11 @@ func existingVaultImportPublishesSummary() throws {
     #expect(!state.isExistingVaultImportPresented)
     #expect(state.errorMessage == nil)
 
+    state.lock()
+    state.unlock(masterPassword: "target master password")
+
+    #expect(state.pendingConflictCount == 1)
+
     let conflict = try #require(state.pendingConflicts.first)
     state.useImported(conflictID: conflict.id)
 
