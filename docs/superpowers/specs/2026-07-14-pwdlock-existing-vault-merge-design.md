@@ -29,6 +29,8 @@
 - `payload`：完整 `LoginItem` JSON；
 - 每组恰好保存一个本地变体和一个导入变体。
 
+本地变体的 `source_vault_id` 记录当前密码库 ID，导入变体记录 `.pwdlock` 载荷中的 `sourceVaultId`；两者不得混用。
+
 数据库迁移使用 `CREATE TABLE IF NOT EXISTS`，不改变已有 `login_items` 表。SQLCipher 继续承担本地静态加密。
 
 ## 合并规则

@@ -180,12 +180,12 @@ CREATE INDEX IF NOT EXISTS idx_conflict_groups_record ON conflict_groups(record_
 新增仓储入口：
 
 ```swift
-public func mergeImportedItems(_ items: [LoginItem], sourceVaultID: UUID, now: Date = Date()) throws -> ImportMergeSummary
+public func mergeImportedItems(_ items: [LoginItem], importedSourceVaultID: UUID, localSourceVaultID: UUID, now: Date = Date()) throws -> ImportMergeSummary
 public func pendingConflicts() throws -> [ImportConflict]
 public func pendingConflictCount() throws -> Int
 ```
 
-实现必须使用 `BEGIN IMMEDIATE`/`COMMIT`，任何错误由 `defer` 执行 `ROLLBACK`。逐条读取现有 `payload`：不存在则调用当前 `insert`；`LoginItem == imported` 则计为相同；不同时将本地和导入 JSON 编码后，查询同 `record_id`、同 `source_vault_id` 且两份 payload 字节都相同的现有组，只有查不到时才插入一个 group 和两个 variant。返回值只统计本次实际新增的冲突。
+实现必须使用 `BEGIN IMMEDIATE`/`COMMIT`，任何错误由 `defer` 执行 `ROLLBACK`。逐条读取现有 `payload`：不存在则调用当前 `insert`；`LoginItem == imported` 则计为相同；不同时将本地和导入 JSON 编码后，查询同 `record_id`、同导入来源 `source_vault_id` 且两份 payload 字节都相同的现有组，只有查不到时才插入一个 group 和两个 variant。本地变体写 `localSourceVaultID`，导入变体写 `importedSourceVaultID`。返回值只统计本次实际新增的冲突。
 
 - [ ] **Step 4: 添加故障注入并验证事务回滚**
 
@@ -323,7 +323,12 @@ public func mergeArchive(at archiveURL: URL, exportPassword: String) throws -> I
     let data = try readAndVerifyArchive(at: archiveURL)
     let payload = try PwdlockArchive.import(data: data, password: exportPassword)
     let items = try payload.records.map(loginItem)
-    return try loginItemRepository().mergeImportedItems(items, sourceVaultID: payload.sourceVaultId)
+    let metadata = try metadataStore.load()
+    return try loginItemRepository().mergeImportedItems(
+        items,
+        importedSourceVaultID: payload.sourceVaultId,
+        localSourceVaultID: try uuid(from: metadata.vaultID)
+    )
 }
 ```
 
@@ -473,4 +478,3 @@ Expected: `Build complete!`。
 Run: `cd platforms/macos/PwdlockMac && swift test 2>&1 | tail -20`
 
 Expected: 末尾显示测试运行成功；将实际测试总数记录在执行日志中。
-
