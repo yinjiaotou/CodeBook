@@ -11,7 +11,7 @@ public struct OnlineSession: Sendable, Equatable {
     public init(accessToken: String) { self.accessToken = accessToken }
 }
 
-public struct OnlineDevice: Sendable, Equatable, Decodable { public let id: UUID }
+public struct OnlineDevice: Sendable, Equatable, Decodable { public let id: UUID; public let publicSigningKey: String }
 public struct OnlineVault: Sendable, Equatable, Decodable { public let id: UUID; public let encryptedKeyEnvelope: String }
 public struct OnlineRemoteChange: Sendable, Equatable, Decodable { public let sequence: String; public let changeId: String; public let deviceId: UUID; public let ciphertext: String; public let signature: String }
 
@@ -42,6 +42,14 @@ public struct OnlineAPIClient: OnlineAuthenticating, Sendable {
 
     public func registerDevice(label: String, publicSigningKey: String, accessToken: String) async throws -> OnlineDevice {
         try await authorized(path: "devices", body: DeviceRequest(label: label, publicSigningKey: publicSigningKey), token: accessToken)
+    }
+
+    public func listDevices(accessToken: String) async throws -> [OnlineDevice] {
+        var request = URLRequest(url: baseURL.appending(path: "devices"))
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await transport(request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw OnlineAPIError.rejected }
+        return try JSONDecoder().decode([OnlineDevice].self, from: data)
     }
 
     public func createVault(encryptedKeyEnvelope: String, accessToken: String) async throws -> OnlineVault {
