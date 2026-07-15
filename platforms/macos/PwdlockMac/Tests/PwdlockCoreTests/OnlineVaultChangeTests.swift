@@ -11,3 +11,14 @@ func onlineVaultChangeContract() throws {
     #expect(!envelope.ciphertext.contains("secret"))
     #expect(!envelope.ciphertext.contains("银行"))
 }
+
+@Test("downloaded online change verifies its device signature before decoding")
+func downloadedOnlineVaultChangeContract() throws {
+    let vaultID = UUID(), changeID = UUID(), key = Data(repeating: 8, count: 32), signingKey = Curve25519.Signing.PrivateKey()
+    let item = LoginItem(id: UUID(), title: "项目", username: "a", password: "p", url: "", category: "", note: "", createdAt: Date(), updatedAt: Date(), revision: 0, deviceID: UUID())
+    let envelope = try OnlineVaultChangeCodec.seal(OnlineVaultChange(operation: .upsert, item: item), vaultID: vaultID, changeID: changeID, vaultKey: key, signingKey: signingKey)
+    let remote = OnlineRemoteChange(sequence: "1", changeId: changeID.uuidString, deviceId: UUID(), ciphertext: envelope.ciphertext, signature: envelope.signature)
+    let decoded = try OnlineVaultChangeCodec.open(remote, vaultID: vaultID, vaultKey: key, publicSigningKey: signingKey.publicKey)
+    #expect(decoded.item.id == item.id)
+    #expect(decoded.item.password == item.password)
+}
