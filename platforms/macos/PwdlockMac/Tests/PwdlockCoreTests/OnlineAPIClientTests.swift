@@ -16,3 +16,18 @@ func onlineAPILoginContract() async throws {
     let session = try await client.login(loginName: "alice@example.test", password: "not-a-vault-password")
     #expect(session.accessToken == "token")
 }
+
+@Test("online API authenticates device and vault setup requests")
+func onlineAPISetupContract() async throws {
+    let baseURL = try #require(URL(string: "https://sync.example.test/v1"))
+    let client = OnlineAPIClient(baseURL: baseURL) { request in
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer token")
+        let response = HTTPURLResponse(url: request.url!, statusCode: 201, httpVersion: nil, headerFields: nil)!
+        if request.url!.path.hasSuffix("devices") { return (Data("{\"id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\"}".utf8), response) }
+        return (Data("{\"id\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\",\"encryptedKeyEnvelope\":\"YWJjZA==\"}".utf8), response)
+    }
+    let device = try await client.registerDevice(label: "Mac", publicSigningKey: Data(repeating: 1, count: 32).base64EncodedString(), accessToken: "token")
+    let vault = try await client.createVault(encryptedKeyEnvelope: Data(repeating: 2, count: 32).base64EncodedString(), accessToken: "token")
+    #expect(device.id.uuidString.lowercased() == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    #expect(vault.id.uuidString.lowercased() == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+}
