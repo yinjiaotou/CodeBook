@@ -67,6 +67,8 @@ private struct ModeCard: View {
 struct OnlineVaultRootView: View {
     let switchToMode: (PasswordStorageMode) -> Void
     @StateObject private var account = OnlineAccountState()
+    @State private var vaultPassword = ""
+    @State private var vaultPasswordConfirmation = ""
 
     var body: some View {
         VStack(spacing: 18) {
@@ -104,6 +106,17 @@ struct OnlineVaultRootView: View {
                 .buttonStyle(.borderless)
                 .disabled(account.isWorking)
             if account.isWorking { ProgressView().controlSize(.small) }
+            if account.isSignedIn {
+                Divider().padding(.vertical, 6)
+                Text("创建在线密码库").font(.headline)
+                SecureField("在线 Vault 主密码", text: $vaultPassword)
+                SecureField("确认主密码", text: $vaultPasswordConfirmation)
+                Text("此主密码仅用于本机加密 Vault Key，不会发送到服务端。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Button("创建在线密码库") {}
+                    .buttonStyle(.borderedProminent)
+                    .disabled(vaultPassword.count < 12 || vaultPassword != vaultPasswordConfirmation)
+            }
         }
         .frame(width: 360)
         .padding(36)
