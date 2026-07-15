@@ -10,6 +10,7 @@ final class OnlineAccountState: ObservableObject {
     @Published private(set) var isWorking = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var onlineVaultCreated = false
+    @Published private(set) var onlineVaults: [OnlineVault] = []
     @Published private(set) var isSignedIn = false
     private let serviceURL = URL(string: "http://127.0.0.1:3000/v1")!
     private static let service = "com.pwdlock.mac.online-access-token"
@@ -30,7 +31,8 @@ final class OnlineAccountState: ObservableObject {
                 let api = OnlineAPIClient(baseURL: serviceURL)
                 _ = try await api.registerDevice(label: Host.current().localizedName ?? "Mac", publicSigningKey: created.publicSigningKey, accessToken: token)
                 _ = try await api.createVault(encryptedKeyEnvelope: created.encryptedKeyEnvelope, accessToken: token)
-                onlineVaultCreated = true
+                onlineVaults = try await api.listVaults(accessToken: token)
+                onlineVaultCreated = !onlineVaults.isEmpty
             } catch {
                 keyStore.delete(accountID: account)
                 errorMessage = "无法创建在线密码库。"
@@ -54,6 +56,8 @@ final class OnlineAccountState: ObservableObject {
                 let api = OnlineAPIClient(baseURL: serviceURL)
                 let session = try await (register ? api.register(loginName: account, password: password) : api.login(loginName: account, password: password))
                 try saveToken(session.accessToken); password = ""; isSignedIn = true
+                onlineVaults = try await api.listVaults(accessToken: session.accessToken)
+                onlineVaultCreated = !onlineVaults.isEmpty
             } catch { errorMessage = register ? "无法创建在线账号。" : "账号或密码错误，或无法连接服务。" }
             isWorking = false
         }

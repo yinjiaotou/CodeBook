@@ -106,7 +106,7 @@ struct OnlineVaultRootView: View {
                 .buttonStyle(.borderless)
                 .disabled(account.isWorking)
             if account.isWorking { ProgressView().controlSize(.small) }
-            if account.isSignedIn {
+            if account.isSignedIn && !account.onlineVaultCreated {
                 Divider().padding(.vertical, 6)
                 Text("创建在线密码库").font(.headline)
                 SecureField("在线 Vault 主密码", text: $vaultPassword)
@@ -121,6 +121,11 @@ struct OnlineVaultRootView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(vaultPassword.count < 12 || vaultPassword != vaultPasswordConfirmation)
                 if account.onlineVaultCreated { Label("在线密码库已创建", systemImage: "checkmark.circle").foregroundStyle(.green) }
+            } else if account.isSignedIn {
+                Label("已找到 \(account.onlineVaults.count) 个在线密码库", systemImage: "lock.icloud")
+                    .foregroundStyle(.secondary)
+                Text("请输入 Vault 主密码以在本机解锁。")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
         }
         .frame(width: 360)
