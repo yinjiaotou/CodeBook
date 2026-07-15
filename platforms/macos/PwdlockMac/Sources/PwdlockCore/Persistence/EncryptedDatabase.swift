@@ -11,6 +11,7 @@ public enum EncryptedDatabaseError: Error, Equatable {
 }
 
 public final class EncryptedDatabase: @unchecked Sendable {
+    private let connectionLock = NSRecursiveLock()
     private var handle: OpaquePointer?
 
     private init(handle: OpaquePointer) {
@@ -55,46 +56,51 @@ public final class EncryptedDatabase: @unchecked Sendable {
     }
 
     public func execute(_ sql: String) throws {
-        let handle = try openHandle()
-        let status = sql.withCString { sqlite3_exec(handle, $0, nil, nil, nil) }
-        guard status == SQLITE_OK else {
-            throw EncryptedDatabaseError.executionFailed(status)
+        try withHandle { handle in
+            let status = sql.withCString { sqlite3_exec(handle, $0, nil, nil, nil) }
+            guard status == SQLITE_OK else {
+                throw EncryptedDatabaseError.executionFailed(status)
+            }
         }
     }
 
     public func scalarInt(_ sql: String) throws -> Int64 {
-        let handle = try openHandle()
-        var statement: OpaquePointer?
-        let prepareStatus = sql.withCString { sqlite3_prepare_v2(handle, $0, -1, &statement, nil) }
-        guard prepareStatus == SQLITE_OK, let statement else {
-            throw EncryptedDatabaseError.executionFailed(prepareStatus)
-        }
-        defer { sqlite3_finalize(statement) }
+        try withHandle { handle in
+            var statement: OpaquePointer?
+            let prepareStatus = sql.withCString { sqlite3_prepare_v2(handle, $0, -1, &statement, nil) }
+            guard prepareStatus == SQLITE_OK, let statement else {
+                throw EncryptedDatabaseError.executionFailed(prepareStatus)
+            }
+            defer { sqlite3_finalize(statement) }
 
-        let stepStatus = sqlite3_step(statement)
-        guard stepStatus == SQLITE_ROW else {
-            throw EncryptedDatabaseError.executionFailed(stepStatus)
+            let stepStatus = sqlite3_step(statement)
+            guard stepStatus == SQLITE_ROW else {
+                throw EncryptedDatabaseError.executionFailed(stepStatus)
+            }
+            return sqlite3_column_int64(statement, 0)
         }
-        return sqlite3_column_int64(statement, 0)
     }
 
     public func scalarText(_ sql: String) throws -> String {
-        let handle = try openHandle()
-        var statement: OpaquePointer?
-        let prepareStatus = sql.withCString { sqlite3_prepare_v2(handle, $0, -1, &statement, nil) }
-        guard prepareStatus == SQLITE_OK, let statement else {
-            throw EncryptedDatabaseError.executionFailed(prepareStatus)
-        }
-        defer { sqlite3_finalize(statement) }
+        try withHandle { handle in
+            var statement: OpaquePointer?
+            let prepareStatus = sql.withCString { sqlite3_prepare_v2(handle, $0, -1, &statement, nil) }
+            guard prepareStatus == SQLITE_OK, let statement else {
+                throw EncryptedDatabaseError.executionFailed(prepareStatus)
+            }
+            defer { sqlite3_finalize(statement) }
 
-        let stepStatus = sqlite3_step(statement)
-        guard stepStatus == SQLITE_ROW, let text = sqlite3_column_text(statement, 0) else {
-            throw EncryptedDatabaseError.executionFailed(stepStatus)
+            let stepStatus = sqlite3_step(statement)
+            guard stepStatus == SQLITE_ROW, let text = sqlite3_column_text(statement, 0) else {
+                throw EncryptedDatabaseError.executionFailed(stepStatus)
+            }
+            return String(cString: text)
         }
-        return String(cString: text)
     }
 
     public func close() {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
         guard let handle else { return }
         self.handle = nil
         sqlite3_close_v2(handle)
@@ -103,24 +109,24 @@ public final class EncryptedDatabase: @unchecked Sendable {
     /// Creates a SQLCipher-to-SQLCipher snapshot. The destination is keyed before
     /// SQLite writes any database pages, so this never creates a plaintext copy.
     func createEncryptedBackup(at destinationURL: URL, vaultKey: Data) throws {
-        let sourceHandle = try openHandle()
-        let destination = try EncryptedDatabase.open(at: destinationURL, vaultKey: vaultKey)
-        defer { destination.close() }
+        try withHandle { sourceHandle in
+            let destination = try EncryptedDatabase.open(at: destinationURL, vaultKey: vaultKey)
+            defer { destination.close() }
 
-        let backup = try destination.withHandle { destinationHandle -> OpaquePointer in
-            guard let backup = sqlite3_backup_init(destinationHandle, "main", sourceHandle, "main") else {
-                throw EncryptedDatabaseError.backupFailed(sqlite3_errcode(destinationHandle))
+            try destination.withHandle { destinationHandle in
+                guard let backup = sqlite3_backup_init(destinationHandle, "main", sourceHandle, "main") else {
+                    throw EncryptedDatabaseError.backupFailed(sqlite3_errcode(destinationHandle))
+                }
+
+                let stepStatus = sqlite3_backup_step(backup, -1)
+                let finishStatus = sqlite3_backup_finish(backup)
+                guard stepStatus == SQLITE_DONE else {
+                    throw EncryptedDatabaseError.backupFailed(stepStatus)
+                }
+                guard finishStatus == SQLITE_OK else {
+                    throw EncryptedDatabaseError.backupFailed(finishStatus)
+                }
             }
-            return backup
-        }
-
-        let stepStatus = sqlite3_backup_step(backup, -1)
-        let finishStatus = sqlite3_backup_finish(backup)
-        guard stepStatus == SQLITE_DONE else {
-            throw EncryptedDatabaseError.backupFailed(stepStatus)
-        }
-        guard finishStatus == SQLITE_OK else {
-            throw EncryptedDatabaseError.backupFailed(finishStatus)
         }
     }
 
@@ -132,6 +138,8 @@ public final class EncryptedDatabase: @unchecked Sendable {
     }
 
     func withHandle<T>(_ operation: (OpaquePointer) throws -> T) throws -> T {
-        try operation(openHandle())
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
+        return try operation(openHandle())
     }
 }

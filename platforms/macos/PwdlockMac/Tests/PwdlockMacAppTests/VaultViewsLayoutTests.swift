@@ -48,3 +48,61 @@ func archiveTransferViewsUseChineseLabelsWithoutDisplayingPathsOrSecrets() throw
     #expect(source.contains("private struct ExportArchiveView: View"))
     #expect(source.contains("不要重复使用主密码。"))
 }
+
+@Test("library exposes import and conflict center while conflict passwords stay masked")
+func importConflictUIContract() throws {
+    let testFile = URL(filePath: #filePath)
+    let packageDirectory = testFile
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let source = try String(
+        contentsOf: packageDirectory.appending(path: "Sources/PwdlockMacApp/VaultViews.swift"),
+        encoding: .utf8
+    )
+
+    #expect(source.contains("导入加密文件"))
+    #expect(source.contains("导入不会静默覆盖本地记录"))
+    #expect(source.contains("待处理冲突"))
+    #expect(source.contains("使用导入版本"))
+    #expect(source.contains("保留本地版本"))
+    #expect(source.contains("采用导入"))
+    #expect(source.contains("String(repeating: \"•\""))
+    #expect(source.contains("if state.mergeManually("))
+    #expect(source.contains("@State private var expectedLocal: LoginItem"))
+    #expect(source.contains("expectedLocal: expectedLocal"))
+}
+
+@Test("Touch ID controls preserve the master-password unlock path")
+func touchIDUIContract() throws {
+    let testFile = URL(filePath: #filePath)
+    let packageDirectory = testFile
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let source = try String(
+        contentsOf: packageDirectory.appending(path: "Sources/PwdlockMacApp/VaultViews.swift"),
+        encoding: .utf8
+    )
+
+    #expect(source.contains("使用 Touch ID 解锁"))
+    #expect(source.contains("启用 Touch ID 快捷解锁"))
+    #expect(source.contains("SecureField(\"主密码\""))
+    #expect(source.contains("Button(\"解锁\""))
+    #expect(!source.contains(".navigationTitle(\"密码锁\")"))
+    #expect(!source.contains("Button(\"创建本地备份\""))
+    #expect(!source.contains("Button(\"恢复最新备份\""))
+    #expect(source.contains("Section(\"搜索\")"))
+    #expect(source.contains("TextField(\"搜索标题、用户名、网站、分类或备注\""))
+    #expect(!source.contains("Picker(\"分类\""))
+    #expect(!source.contains("state.beginUnlockScreenIfNeeded()"))
+    #expect(source.contains("systemImage: \"touchid\""))
+
+    let appSource = try String(
+        contentsOf: packageDirectory.appending(path: "Sources/PwdlockMacApp/PwdlockMacApp.swift"),
+        encoding: .utf8
+    )
+    #expect(appSource.contains("@NSApplicationDelegateAdaptor"))
+    #expect(appSource.contains("applicationDidResignActive"))
+    #expect(appSource.contains("state.applicationDidResignActive()"))
+}

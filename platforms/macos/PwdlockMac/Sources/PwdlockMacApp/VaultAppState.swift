@@ -1,4 +1,5 @@
 import Foundation
+@preconcurrency import LocalAuthentication
 import PwdlockCore
 
 enum VaultScreen: Equatable {
@@ -39,6 +40,15 @@ final class VaultAppState: ObservableObject {
     @Published private(set) var clipboardSecondsRemaining: Int?
     @Published var isChangeMasterPasswordPresented = false
     @Published var isExportArchivePresented = false
+    @Published var isExistingVaultImportPresented = false
+    @Published var isConflictCenterPresented = false
+    @Published private(set) var pendingConflicts: [ImportConflict] = []
+    @Published private(set) var canUseTouchID = false
+    @Published private(set) var isTouchIDEnabled = false
+    @Published private(set) var isTouchIDAuthenticating = false
+
+    var pendingConflictCount: Int { pendingConflicts.count }
+    var isTouchIDAvailable: Bool { biometricAuthenticator.isTouchIDAvailable }
 
     private let session: VaultSession
     private var autoLockController: VaultAutoLockController? = nil
@@ -48,7 +58,9 @@ final class VaultAppState: ObservableObject {
     private var clipboardExpiry: Date?
     private let unlockRateLimiter: UnlockRateLimiter
     private let userDefaults: UserDefaults
+    private let biometricAuthenticator: any BiometricAuthenticating
     private var allItems: [LoginItem] = []
+    private var touchIDAttemptID: UUID?
 
     convenience init(directory: URL = VaultAppState.defaultVaultDirectory()) {
         self.init(session: VaultSession(directory: directory))
@@ -66,6 +78,7 @@ final class VaultAppState: ObservableObject {
         session: VaultSession,
         scheduler: S,
         clipboard: C,
+        biometricAuthenticator: any BiometricAuthenticating = LocalAuthenticationAuthenticator(),
         unlockRateLimiter: UnlockRateLimiter = UnlockRateLimiter(),
         userDefaults: UserDefaults = .standard,
         now: @escaping () -> Date = { Date() }
@@ -76,6 +89,7 @@ final class VaultAppState: ObservableObject {
         self.now = now
         self.unlockRateLimiter = unlockRateLimiter
         self.userDefaults = userDefaults
+        self.biometricAuthenticator = biometricAuthenticator
         let storedValue = userDefaults.object(forKey: AutoLockDuration.defaultsKey)
         let storedTimeout = storedValue as? Int
         autoLockDuration = AutoLockDuration(rawValue: storedTimeout ?? AutoLockDuration.fiveMinutes.rawValue)
@@ -94,7 +108,9 @@ final class VaultAppState: ObservableObject {
         }
         if session.isUnlocked {
             reloadItems()
+            reloadConflicts()
         }
+        refreshTouchIDState()
     }
 
     func createVault(masterPassword: String, confirmation: String) {
@@ -112,6 +128,8 @@ final class VaultAppState: ObservableObject {
             errorMessage = nil
             screen = .library
             reloadItems()
+            reloadConflicts()
+            refreshTouchIDState()
             recordActivity()
         } catch {
             errorMessage = "无法创建密码库。"
@@ -151,6 +169,7 @@ final class VaultAppState: ObservableObject {
             operationSummary = "已导入 \(try session.loginItemRepository().search(query: "").count) 个登录项。"
             screen = .library
             reloadItems()
+            refreshTouchIDState()
             recordActivity()
         } catch {
             operationSummary = nil
@@ -161,6 +180,78 @@ final class VaultAppState: ObservableObject {
     func presentExportArchive() {
         isExportArchivePresented = true
         recordActivity()
+    }
+
+    func presentExistingVaultImport() {
+        isExistingVaultImportPresented = true
+        recordActivity()
+    }
+
+    func importIntoExistingVault(at archiveURL: URL, exportPassword: String) {
+        guard screen == .library, !exportPassword.isEmpty else {
+            errorMessage = "密码错误或文件损坏，未修改当前密码库。"
+            return
+        }
+        do {
+            let summary = try session.mergeArchive(at: archiveURL, exportPassword: exportPassword)
+            operationSummary = "导入完成：新增 \(summary.added) 项，已存在 \(summary.identical) 项，待处理冲突 \(summary.conflicts) 项。"
+            errorMessage = nil
+            isExistingVaultImportPresented = false
+            reloadItems()
+            reloadConflicts()
+            recordActivity()
+        } catch {
+            operationSummary = nil
+            errorMessage = "密码错误或文件损坏，未修改当前密码库。"
+        }
+    }
+
+    @discardableResult
+    func useImported(conflictID: UUID) -> Bool {
+        performConflictAction {
+            try session.loginItemRepository().resolveUsingImported(conflictID: conflictID)
+        }
+    }
+
+    @discardableResult
+    func keepLocal(conflictID: UUID) -> Bool {
+        performConflictAction {
+            try session.loginItemRepository().resolveKeepingLocal(conflictID: conflictID)
+        }
+    }
+
+    @discardableResult
+    func mergeManually(conflictID: UUID, merge: ManualLoginMerge, expectedLocal: LoginItem) -> Bool {
+        performConflictAction {
+            try session.loginItemRepository().resolveManually(
+                conflictID: conflictID,
+                merge: merge,
+                expectedLocal: expectedLocal
+            )
+        }
+    }
+
+    private func performConflictAction(_ action: () throws -> Void) -> Bool {
+        do {
+            try action()
+            errorMessage = nil
+            reloadItems()
+            reloadConflicts()
+            if pendingConflicts.isEmpty {
+                operationSummary = nil
+            }
+            recordActivity()
+            return true
+        } catch LoginItemRepositoryError.conflictChanged {
+            reloadItems()
+            reloadConflicts()
+            errorMessage = "本地记录已更新，请重新检查冲突。"
+            recordActivity()
+            return false
+        } catch {
+            errorMessage = "无法处理此冲突。"
+            return false
+        }
     }
 
     /// Exports using an independent password supplied by the export sheet.
@@ -189,11 +280,14 @@ final class VaultAppState: ObservableObject {
 
         do {
             try session.unlock(masterPassword: masterPassword)
+            if touchIDAttemptID != nil {
+                biometricAuthenticator.cancel()
+                touchIDAttemptID = nil
+                isTouchIDAuthenticating = false
+            }
             unlockRateLimiter.recordSuccessfulUnlock()
             errorMessage = nil
-            screen = .library
-            reloadItems()
-            recordActivity()
+            finishUnlock()
         } catch {
             unlockRateLimiter.recordFailedUnlock()
             errorMessage = "无法解锁密码库。"
@@ -213,6 +307,7 @@ final class VaultAppState: ObservableObject {
         do {
             try session.changeMasterPassword(currentPassword: currentPassword, newPassword: newPassword)
             errorMessage = nil
+            refreshTouchIDState()
         } catch {
             errorMessage = "无法更改主密码。"
         }
@@ -233,13 +328,17 @@ final class VaultAppState: ObservableObject {
     }
 
     func restoreLatestLocalBackup() {
+        isConflictCenterPresented = false
+        pendingConflicts = []
         do {
             try session.restoreLatestLocalBackup()
             selectedItem = nil
             isPasswordRevealed = false
             reloadItems()
+            reloadConflicts()
             recordActivity()
         } catch {
+            reloadConflicts()
             errorMessage = "无法恢复最新本地备份。"
         }
     }
@@ -252,7 +351,19 @@ final class VaultAppState: ObservableObject {
     }
 
     func applicationDidEnterBackground() {
-        autoLockController?.applicationDidEnterBackground()
+        biometricAuthenticator.cancel()
+        touchIDAttemptID = nil
+        isTouchIDAuthenticating = false
+        guard session.isUnlocked else { return }
+        lock()
+    }
+
+    func applicationDidResignActive() {
+        // The system's Touch ID sheet temporarily makes this app inactive.
+        // The vault is already locked during that flow, so cancelling here
+        // would dismiss a valid user-initiated authentication request.
+        guard !isTouchIDAuthenticating else { return }
+        applicationDidEnterBackground()
     }
 
     func recordActivity() {
@@ -288,7 +399,88 @@ final class VaultAppState: ObservableObject {
         isPasswordRevealed = false
         isChangeMasterPasswordPresented = false
         isExportArchivePresented = false
+        isExistingVaultImportPresented = false
+        isConflictCenterPresented = false
+        pendingConflicts = []
+        touchIDAttemptID = nil
+        isTouchIDAuthenticating = false
         screen = .unlock
+        refreshTouchIDState()
+    }
+
+    func retryTouchID() {
+        refreshTouchIDState()
+        guard screen == .unlock, canUseTouchID, !isTouchIDAuthenticating else { return }
+        requestTouchIDUnlock()
+    }
+
+    func setTouchIDEnabled(_ enabled: Bool) {
+        guard screen == .library else { return }
+        do {
+            if enabled {
+                try session.enableBiometricUnlock()
+            } else {
+                try session.disableBiometricUnlock()
+            }
+            errorMessage = nil
+        } catch VaultSessionError.masterPasswordUnlockRequired {
+            errorMessage = "请先使用主密码解锁后再启用 Touch ID。"
+        } catch {
+            errorMessage = enabled ? "无法启用 Touch ID 快捷解锁。" : "无法关闭 Touch ID 快捷解锁。"
+        }
+        refreshTouchIDState()
+        recordActivity()
+    }
+
+    private func requestTouchIDUnlock() {
+        let attemptID = UUID()
+        touchIDAttemptID = attemptID
+        isTouchIDAuthenticating = true
+        biometricAuthenticator.authenticate(reason: "使用 Touch ID 解锁密码库") { [weak self] result, context in
+            Task { @MainActor [weak self] in
+                self?.finishTouchIDAttempt(id: attemptID, result: result, context: context)
+            }
+        }
+    }
+
+    private func finishTouchIDAttempt(
+        id: UUID,
+        result: BiometricAuthenticationResult,
+        context: BiometricAuthenticationContext?
+    ) {
+        guard touchIDAttemptID == id else { return }
+        touchIDAttemptID = nil
+        isTouchIDAuthenticating = false
+        switch result {
+        case .cancelled:
+            return
+        case .failed:
+            errorMessage = "Touch ID 无法完成验证，请使用主密码。"
+        case .success:
+            do {
+                try session.unlockWithBiometrics(context: context?.localAuthenticationContext)
+                errorMessage = nil
+                finishUnlock()
+            } catch {
+                errorMessage = "Touch ID 无法完成验证，请使用主密码。"
+                refreshTouchIDState()
+            }
+        }
+    }
+
+    private func finishUnlock() {
+        screen = .library
+        reloadItems()
+        reloadConflicts()
+        refreshTouchIDState()
+        recordActivity()
+    }
+
+    private func refreshTouchIDState() {
+        isTouchIDEnabled = session.isBiometricUnlockConfigured
+        canUseTouchID = screen == .unlock
+            && biometricAuthenticator.isTouchIDAvailable
+            && isTouchIDEnabled
     }
 
     func selectItem(id: UUID?) {
@@ -409,6 +601,16 @@ final class VaultAppState: ObservableObject {
         }
     }
 
+    private func reloadConflicts() {
+        guard session.isUnlocked else { return }
+        do {
+            pendingConflicts = try session.loginItemRepository().pendingConflicts()
+        } catch {
+            pendingConflicts = []
+            errorMessage = "无法载入待处理冲突。"
+        }
+    }
+
     private func applyFilters() {
         categories = Array(Set(allItems.map { $0.category.trimmingCharacters(in: .whitespacesAndNewlines) }))
             .filter { !$0.isEmpty }
@@ -419,10 +621,17 @@ final class VaultAppState: ObservableObject {
         }
 
         items = allItems.filter { item in
-            let titleMatches = searchText.isEmpty || item.title.localizedCaseInsensitiveContains(searchText)
+            let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let textMatches = query.isEmpty || [
+                item.title,
+                item.username,
+                item.url,
+                item.category,
+                item.note
+            ].contains { $0.localizedCaseInsensitiveContains(query) }
             let categoryMatches = selectedCategory == nil
                 || item.category.trimmingCharacters(in: .whitespacesAndNewlines) == selectedCategory
-            return titleMatches && categoryMatches
+            return textMatches && categoryMatches
         }
     }
 
