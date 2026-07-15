@@ -11,6 +11,7 @@ final class OnlineAccountState: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var onlineVaultCreated = false
     @Published private(set) var onlineVaults: [OnlineVault] = []
+    @Published private(set) var isOnlineVaultUnlocked = false
     @Published private(set) var isSignedIn = false
     private let serviceURL = URL(string: "http://127.0.0.1:3000/v1")!
     private static let service = "com.pwdlock.mac.online-access-token"
@@ -18,6 +19,23 @@ final class OnlineAccountState: ObservableObject {
     func login() { authenticate(register: false) }
     func register() { authenticate(register: true) }
     func signOut() { deleteToken(); password = ""; isSignedIn = false }
+    func unlockOnlineVault(masterPassword: String) {
+        guard let vault = onlineVaults.first, !isWorking else { return }
+        isWorking = true; errorMessage = nil
+        do {
+            let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Pwdlock/OnlineCache", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let database = try OnlineVaultAccess.openCache(
+                at: directory.appendingPathComponent("\(vault.id.uuidString.lowercased()).sqlite"),
+                encryptedKeyEnvelope: vault.encryptedKeyEnvelope,
+                masterPassword: masterPassword
+            )
+            database.close()
+            isOnlineVaultUnlocked = true
+        } catch { errorMessage = "无法解锁在线密码库。" }
+        isWorking = false
+    }
     func createOnlineVault(masterPassword: String) {
         guard let token = accessToken(), !isWorking else { errorMessage = "登录状态已失效。"; return }
         let account = loginName.trimmingCharacters(in: .whitespacesAndNewlines)

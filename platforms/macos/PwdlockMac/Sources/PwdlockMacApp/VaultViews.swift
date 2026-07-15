@@ -69,6 +69,7 @@ struct OnlineVaultRootView: View {
     @StateObject private var account = OnlineAccountState()
     @State private var vaultPassword = ""
     @State private var vaultPasswordConfirmation = ""
+    @State private var unlockPassword = ""
 
     var body: some View {
         VStack(spacing: 18) {
@@ -126,6 +127,17 @@ struct OnlineVaultRootView: View {
                     .foregroundStyle(.secondary)
                 Text("请输入 Vault 主密码以在本机解锁。")
                     .font(.footnote).foregroundStyle(.secondary)
+                SecureField("Vault 主密码", text: $unlockPassword)
+                Button("解锁在线密码库") {
+                    account.unlockOnlineVault(masterPassword: unlockPassword)
+                    unlockPassword = ""
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(unlockPassword.isEmpty || account.isWorking)
+                if account.isOnlineVaultUnlocked {
+                    Label("在线密码库已在本机解锁", systemImage: "checkmark.circle")
+                        .foregroundStyle(.green)
+                }
             }
         }
         .frame(width: 360)
