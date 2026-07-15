@@ -113,9 +113,14 @@ struct OnlineVaultRootView: View {
                 SecureField("确认主密码", text: $vaultPasswordConfirmation)
                 Text("此主密码仅用于本机加密 Vault Key，不会发送到服务端。")
                     .font(.footnote).foregroundStyle(.secondary)
-                Button("创建在线密码库") {}
+                Button("创建在线密码库") {
+                    account.createOnlineVault(masterPassword: vaultPassword)
+                    vaultPassword = ""
+                    vaultPasswordConfirmation = ""
+                }
                     .buttonStyle(.borderedProminent)
                     .disabled(vaultPassword.count < 12 || vaultPassword != vaultPasswordConfirmation)
+                if account.onlineVaultCreated { Label("在线密码库已创建", systemImage: "checkmark.circle").foregroundStyle(.green) }
             }
         }
         .frame(width: 360)

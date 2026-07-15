@@ -9,6 +9,7 @@ final class OnlineAccountState: ObservableObject {
     @Published var password = ""
     @Published private(set) var isWorking = false
     @Published private(set) var errorMessage: String?
+    @Published private(set) var onlineVaultCreated = false
     @Published private(set) var isSignedIn = false
     private let serviceURL = URL(string: "http://127.0.0.1:3000/v1")!
     private static let service = "com.pwdlock.mac.online-access-token"
@@ -16,6 +17,27 @@ final class OnlineAccountState: ObservableObject {
     func login() { authenticate(register: false) }
     func register() { authenticate(register: true) }
     func signOut() { deleteToken(); password = ""; isSignedIn = false }
+    func createOnlineVault(masterPassword: String) {
+        guard let token = accessToken(), !isWorking else { errorMessage = "登录状态已失效。"; return }
+        let account = loginName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !account.isEmpty else { errorMessage = "无法识别当前账号。"; return }
+        isWorking = true; errorMessage = nil
+        Task {
+            let keyStore = OnlineDeviceKeyStore()
+            do {
+                let created = try OnlineVaultBootstrap.create(masterPassword: masterPassword)
+                try keyStore.save(created.deviceSigningKey, accountID: account)
+                let api = OnlineAPIClient(baseURL: serviceURL)
+                _ = try await api.registerDevice(label: Host.current().localizedName ?? "Mac", publicSigningKey: created.publicSigningKey, accessToken: token)
+                _ = try await api.createVault(encryptedKeyEnvelope: created.encryptedKeyEnvelope, accessToken: token)
+                onlineVaultCreated = true
+            } catch {
+                keyStore.delete(accountID: account)
+                errorMessage = "无法创建在线密码库。"
+            }
+            isWorking = false
+        }
+    }
     func accessToken() -> String? {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: Self.service, kSecAttrAccount as String: "current", kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
         var result: CFTypeRef?
