@@ -17,6 +17,19 @@ func onlineAPILoginContract() async throws {
     #expect(session.accessToken == "token")
 }
 
+@Test("online API lists only vault envelopes authorized for the current account")
+func onlineAPIListVaultsContract() async throws {
+    let baseURL = try #require(URL(string: "https://sync.example.test/v1"))
+    let client = OnlineAPIClient(baseURL: baseURL) { request in
+        #expect(request.httpMethod == "GET")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer token")
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        return (Data("[{\"id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"encryptedKeyEnvelope\":\"YWJjZA==\"}]".utf8), response)
+    }
+    let vaults = try await client.listVaults(accessToken: "token")
+    #expect(vaults.count == 1)
+}
+
 @Test("online API authenticates device and vault setup requests")
 func onlineAPISetupContract() async throws {
     let baseURL = try #require(URL(string: "https://sync.example.test/v1"))

@@ -47,6 +47,18 @@ public struct OnlineAPIClient: OnlineAuthenticating, Sendable {
         try await authorized(path: "vaults", body: VaultRequest(encryptedKeyEnvelope: encryptedKeyEnvelope), token: accessToken)
     }
 
+    public func listVaults(accessToken: String) async throws -> [OnlineVault] {
+        var request = URLRequest(url: baseURL.appending(path: "vaults"))
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        do {
+            let (data, response) = try await transport(request)
+            guard let response = response as? HTTPURLResponse else { throw OnlineAPIError.invalidResponse }
+            guard (200..<300).contains(response.statusCode) else { throw OnlineAPIError.rejected }
+            return try JSONDecoder().decode([OnlineVault].self, from: data)
+        } catch let error as OnlineAPIError { throw error }
+        catch { throw OnlineAPIError.transportFailed }
+    }
+
     private func authenticate(path: String, loginName: String, password: String) async throws -> OnlineSession {
         var request = URLRequest(url: baseURL.appending(path: path))
         request.httpMethod = "POST"
