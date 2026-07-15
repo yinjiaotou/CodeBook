@@ -16,6 +16,12 @@ final class OnlineAccountState: ObservableObject {
     func login() { authenticate(register: false) }
     func register() { authenticate(register: true) }
     func signOut() { deleteToken(); password = ""; isSignedIn = false }
+    func accessToken() -> String? {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: Self.service, kSecAttrAccount as String: "current", kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
 
     private func authenticate(register: Bool) {
         let account = loginName.trimmingCharacters(in: .whitespacesAndNewlines)
