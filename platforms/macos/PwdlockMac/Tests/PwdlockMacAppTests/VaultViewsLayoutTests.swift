@@ -89,6 +89,20 @@ func touchIDUIContract() throws {
     #expect(source.contains("启用 Touch ID 快捷解锁"))
     #expect(source.contains("SecureField(\"主密码\""))
     #expect(source.contains("Button(\"解锁\""))
-    #expect(source.contains("state.beginUnlockScreenIfNeeded()"))
+    #expect(!source.contains(".navigationTitle(\"密码锁\")"))
+    #expect(!source.contains("Button(\"创建本地备份\""))
+    #expect(!source.contains("Button(\"恢复最新备份\""))
+    #expect(source.contains("Section(\"搜索\")"))
+    #expect(source.contains("TextField(\"搜索标题、用户名、网站、分类或备注\""))
+    #expect(!source.contains("Picker(\"分类\""))
+    #expect(!source.contains("state.beginUnlockScreenIfNeeded()"))
     #expect(source.contains("systemImage: \"touchid\""))
+
+    let appSource = try String(
+        contentsOf: packageDirectory.appending(path: "Sources/PwdlockMacApp/PwdlockMacApp.swift"),
+        encoding: .utf8
+    )
+    #expect(appSource.contains("@NSApplicationDelegateAdaptor"))
+    #expect(appSource.contains("applicationDidResignActive"))
+    #expect(appSource.contains("state.applicationDidResignActive()"))
 }

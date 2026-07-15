@@ -60,7 +60,6 @@ final class VaultAppState: ObservableObject {
     private let userDefaults: UserDefaults
     private let biometricAuthenticator: any BiometricAuthenticating
     private var allItems: [LoginItem] = []
-    private var didAutomaticallyPromptTouchID = false
     private var touchIDAttemptID: UUID?
 
     convenience init(directory: URL = VaultAppState.defaultVaultDirectory()) {
@@ -238,6 +237,9 @@ final class VaultAppState: ObservableObject {
             errorMessage = nil
             reloadItems()
             reloadConflicts()
+            if pendingConflicts.isEmpty {
+                operationSummary = nil
+            }
             recordActivity()
             return true
         } catch LoginItemRepositoryError.conflictChanged {
@@ -352,7 +354,16 @@ final class VaultAppState: ObservableObject {
         biometricAuthenticator.cancel()
         touchIDAttemptID = nil
         isTouchIDAuthenticating = false
-        autoLockController?.applicationDidEnterBackground()
+        guard session.isUnlocked else { return }
+        lock()
+    }
+
+    func applicationDidResignActive() {
+        // The system's Touch ID sheet temporarily makes this app inactive.
+        // The vault is already locked during that flow, so cancelling here
+        // would dismiss a valid user-initiated authentication request.
+        guard !isTouchIDAuthenticating else { return }
+        applicationDidEnterBackground()
     }
 
     func recordActivity() {
@@ -393,19 +404,8 @@ final class VaultAppState: ObservableObject {
         pendingConflicts = []
         touchIDAttemptID = nil
         isTouchIDAuthenticating = false
-        didAutomaticallyPromptTouchID = false
         screen = .unlock
         refreshTouchIDState()
-    }
-
-    func beginUnlockScreenIfNeeded() {
-        refreshTouchIDState()
-        guard screen == .unlock,
-              canUseTouchID,
-              !didAutomaticallyPromptTouchID,
-              !isTouchIDAuthenticating else { return }
-        didAutomaticallyPromptTouchID = true
-        requestTouchIDUnlock()
     }
 
     func retryTouchID() {
@@ -621,10 +621,17 @@ final class VaultAppState: ObservableObject {
         }
 
         items = allItems.filter { item in
-            let titleMatches = searchText.isEmpty || item.title.localizedCaseInsensitiveContains(searchText)
+            let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let textMatches = query.isEmpty || [
+                item.title,
+                item.username,
+                item.url,
+                item.category,
+                item.note
+            ].contains { $0.localizedCaseInsensitiveContains(query) }
             let categoryMatches = selectedCategory == nil
                 || item.category.trimmingCharacters(in: .whitespacesAndNewlines) == selectedCategory
-            return titleMatches && categoryMatches
+            return textMatches && categoryMatches
         }
     }
 

@@ -3,6 +3,113 @@ import SwiftUI
 import UniformTypeIdentifiers
 import PwdlockCore
 
+struct PasswordModeSelectionView: View {
+    let selectMode: (PasswordStorageMode) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 26) {
+            Image(systemName: "lock.shield")
+                .font(.system(size: 42, weight: .light))
+                .foregroundStyle(.primary)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("选择密码库模式")
+                    .font(.system(size: 28, weight: .semibold))
+                Text("本地模式与在线模式相互独立；你可以随时在设置中切换。")
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 14) {
+                ModeCard(
+                    title: "本地密码库",
+                    detail: "仅保存在这台 Mac 上",
+                    icon: "internaldrive",
+                    action: { selectMode(.local) }
+                )
+                ModeCard(
+                    title: "在线密码库",
+                    detail: "登录后同步加密数据",
+                    icon: "icloud",
+                    action: { selectMode(.online) }
+                )
+            }
+        }
+        .frame(width: 590)
+        .padding(40)
+    }
+}
+
+private struct ModeCard: View {
+    let title: String
+    let detail: String
+    let icon: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 14) {
+                Image(systemName: icon)
+                    .font(.system(size: 26, weight: .medium))
+                Text(title).font(.headline)
+                Text(detail)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Text("继续")
+                    .font(.subheadline.weight(.medium))
+            }
+            .frame(width: 238, height: 164, alignment: .leading)
+            .padding(20)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct OnlineVaultRootView: View {
+    let switchToMode: (PasswordStorageMode) -> Void
+    @StateObject private var account = OnlineAccountState()
+
+    var body: some View {
+        VStack(spacing: 18) {
+            HStack {
+                Text("在线密码库")
+                    .font(.title2.weight(.semibold))
+                Spacer()
+                Menu {
+                    Button("切换到本地模式") { switchToMode(.local) }
+                } label: {
+                    Label("模式", systemImage: "arrow.triangle.2.circlepath")
+                }
+            }
+            .frame(maxWidth: .infinity)
+
+            Image(systemName: "lock.icloud")
+                .font(.system(size: 42, weight: .light))
+                .padding(.top, 10)
+            Text("登录以访问在线密码库")
+                .font(.headline)
+            Text("密码条目始终在本机加密和解密；服务端只保存密文。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 320)
+            TextField("账号", text: $account.loginName)
+                .textContentType(.username)
+            SecureField("账户密码", text: $account.password)
+                .textContentType(.password)
+            if let errorMessage = account.errorMessage { Text(errorMessage).font(.footnote).foregroundStyle(.red) }
+            Button("登录在线密码库") { account.login() }
+                .buttonStyle(.borderedProminent)
+                .disabled(account.loginName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || account.password.isEmpty || account.isWorking)
+            Button("创建在线账号") { account.register() }
+                .buttonStyle(.borderless)
+                .disabled(account.isWorking)
+            if account.isWorking { ProgressView().controlSize(.small) }
+        }
+        .frame(width: 360)
+        .padding(36)
+    }
+}
+
 struct VaultRootView: View {
     @ObservedObject var state: VaultAppState
 
@@ -99,9 +206,6 @@ private struct UnlockVaultView: View {
         }
         .frame(width: 320)
         .padding(36)
-        .onAppear {
-            state.beginUnlockScreenIfNeeded()
-        }
     }
 
     private func unlock() {
@@ -119,14 +223,8 @@ private struct VaultLibraryView: View {
     var body: some View {
         NavigationSplitView {
             List(selection: $selectedID) {
-                Section("分类") {
-                    Picker("分类", selection: selectedCategoryBinding) {
-                        Text("所有分类").tag(nil as String?)
-                        ForEach(state.categories, id: \.self) { category in
-                            Text(category).tag(Optional(category))
-                        }
-                    }
-                    .pickerStyle(.menu)
+                Section("搜索") {
+                    TextField("搜索标题、用户名、网站、分类或备注", text: $state.searchText)
                 }
 
                 Section("登录信息") {
@@ -135,53 +233,25 @@ private struct VaultLibraryView: View {
                     }
                 }
             }
-            .searchable(text: $state.searchText, prompt: "搜索标题")
-            .navigationTitle("密码锁")
-            .toolbar {
-                ToolbarItemGroup {
-                    Button { showingNewItem = true } label: { Label("新建登录信息", systemImage: "plus") }
-                    Button("创建本地备份", systemImage: "externaldrive.badge.plus") { state.createLocalBackup() }
-                    Button("恢复最新备份", systemImage: "arrow.clockwise") { state.restoreLatestLocalBackup() }
-                    Button("导入加密文件", systemImage: "square.and.arrow.down") { state.presentExistingVaultImport() }
-                    Button("导出密码库", systemImage: "square.and.arrow.up") { state.presentExportArchive() }
-                    Button {
-                        state.isConflictCenterPresented = true
-                    } label: {
-                        Label("待处理冲突（\(state.pendingConflictCount)）", systemImage: "exclamationmark.triangle")
-                    }
-                    .disabled(state.pendingConflictCount == 0)
-                    Button("更改密码", systemImage: "key") { state.presentChangeMasterPassword() }
-                    Menu {
-                        Picker("自动锁定", selection: autoLockDurationBinding) {
-                            ForEach(AutoLockDuration.allCases) { duration in
-                                Text(duration.title).tag(duration)
-                            }
-                        }
-                        if state.isTouchIDAvailable {
-                            Toggle("启用 Touch ID 快捷解锁", isOn: touchIDEnabledBinding)
-                        }
-                    } label: {
-                        Label("设置", systemImage: "gearshape")
-                    }
-                    Button("锁定", systemImage: "lock") { state.lock() }
+        } detail: {
+            Group {
+                if let item = state.selectedItem {
+                    LoginDetailView(
+                        item: item,
+                        isPasswordRevealed: state.isPasswordRevealed,
+                        revealPassword: state.togglePasswordReveal,
+                        copyPassword: { _ = state.copySelectedPassword() },
+                        clipboardSecondsRemaining: state.clipboardSecondsRemaining,
+                        clearCopiedPassword: state.clearCopiedPassword,
+                        deleteItem: { showingDeleteConfirmation = true },
+                        changeMasterPassword: state.presentChangeMasterPassword,
+                        state: state
+                    )
+                } else {
+                    ContentUnavailableView("选择一条登录信息", systemImage: "key")
                 }
             }
-        } detail: {
-            if let item = state.selectedItem {
-                LoginDetailView(
-                    item: item,
-                    isPasswordRevealed: state.isPasswordRevealed,
-                    revealPassword: state.togglePasswordReveal,
-                    copyPassword: { _ = state.copySelectedPassword() },
-                    clipboardSecondsRemaining: state.clipboardSecondsRemaining,
-                    clearCopiedPassword: state.clearCopiedPassword,
-                    deleteItem: { showingDeleteConfirmation = true },
-                    changeMasterPassword: state.presentChangeMasterPassword,
-                    state: state
-                )
-            } else {
-                ContentUnavailableView("选择一条登录信息", systemImage: "key")
-            }
+            .toolbar { vaultActionToolbar }
         }
         .onChange(of: selectedID) { _, id in state.selectItem(id: id) }
         .onChange(of: state.items.map(\.id)) { _, ids in
@@ -200,16 +270,41 @@ private struct VaultLibraryView: View {
         }
     }
 
-    private var selectedCategoryBinding: Binding<String?> {
-        Binding(get: { state.selectedCategory }, set: { state.selectCategory($0) })
-    }
-
     private var autoLockDurationBinding: Binding<AutoLockDuration> {
         Binding(get: { state.autoLockDuration }, set: { state.setAutoLockDuration($0) })
     }
 
     private var touchIDEnabledBinding: Binding<Bool> {
         Binding(get: { state.isTouchIDEnabled }, set: { state.setTouchIDEnabled($0) })
+    }
+
+    @ToolbarContentBuilder
+    private var vaultActionToolbar: some ToolbarContent {
+        ToolbarItemGroup {
+            Button { showingNewItem = true } label: { Label("新建登录信息", systemImage: "plus") }
+            Button("导入加密文件", systemImage: "square.and.arrow.down") { state.presentExistingVaultImport() }
+            Button("导出密码库", systemImage: "square.and.arrow.up") { state.presentExportArchive() }
+            Button {
+                state.isConflictCenterPresented = true
+            } label: {
+                Label("待处理冲突（\(state.pendingConflictCount)）", systemImage: "exclamationmark.triangle")
+            }
+            .disabled(state.pendingConflictCount == 0)
+            Button("更改密码", systemImage: "key") { state.presentChangeMasterPassword() }
+            Menu {
+                Picker("自动锁定", selection: autoLockDurationBinding) {
+                    ForEach(AutoLockDuration.allCases) { duration in
+                        Text(duration.title).tag(duration)
+                    }
+                }
+                if state.isTouchIDAvailable {
+                    Toggle("启用 Touch ID 快捷解锁", isOn: touchIDEnabledBinding)
+                }
+            } label: {
+                Label("设置", systemImage: "gearshape")
+            }
+            Button("锁定", systemImage: "lock") { state.lock() }
+        }
     }
 }
 

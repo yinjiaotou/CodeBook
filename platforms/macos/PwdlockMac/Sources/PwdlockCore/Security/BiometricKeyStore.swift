@@ -41,7 +41,15 @@ public struct KeychainBiometricKeyStore: BiometricKeyStoring {
             kSecAttrAccessControl as String: accessControl,
             kSecValueData as String: key
         ]
-        try check(SecItemAdd(query as CFDictionary, nil))
+        let status = SecItemAdd(query as CFDictionary, nil)
+        if status == errSecMissingEntitlement {
+            // Ad-hoc signed macOS apps cannot obtain the Keychain entitlement required
+            // for a biometry-enforced access-control item. The app still requires a
+            // successful LAContext Touch ID evaluation before it calls `read`.
+            try createFallbackKeychainItem(key, vaultID: vaultID)
+            return
+        }
+        try check(status)
     }
 
     public func read(vaultID: UUID, context: LAContext?) throws -> Data {
@@ -83,6 +91,17 @@ public struct KeychainBiometricKeyStore: BiometricKeyStoring {
             kSecAttrService as String: Self.service,
             kSecAttrAccount as String: account(for: vaultID)
         ]
+    }
+
+    private func createFallbackKeychainItem(_ key: Data, vaultID: UUID) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: account(for: vaultID),
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            kSecValueData as String: key
+        ]
+        try check(SecItemAdd(query as CFDictionary, nil))
     }
 
     private func account(for vaultID: UUID) -> String {

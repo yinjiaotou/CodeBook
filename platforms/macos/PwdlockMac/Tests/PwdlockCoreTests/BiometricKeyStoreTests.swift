@@ -38,7 +38,10 @@ func systemBiometricWrapperSecurityContract() throws {
     )
 
     #expect(keyStoreSource.contains("kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly"))
+    #expect(keyStoreSource.contains("kSecAttrAccessibleWhenUnlockedThisDeviceOnly"))
     #expect(keyStoreSource.contains(".biometryCurrentSet"))
+    #expect(keyStoreSource.contains("errSecMissingEntitlement"))
+    #expect(keyStoreSource.contains("createFallbackKeychainItem"))
     #expect(keyStoreSource.contains("interactionNotAllowed = true"))
     #expect(keyStoreSource.contains("kSecUseAuthenticationContext"))
     #expect(authenticatorSource.contains(".deviceOwnerAuthenticationWithBiometrics"))

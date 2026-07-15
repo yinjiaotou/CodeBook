@@ -5,8 +5,8 @@ import Testing
 @testable import PwdlockCore
 
 @MainActor
-@Test("unlock screen automatically offers Touch ID only once per lock cycle")
-func automaticallyPromptsTouchIDOnce() async throws {
+@Test("unlock screen defaults to the master-password path and Touch ID requires an explicit action")
+func touchIDRequiresExplicitAction() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -30,8 +30,9 @@ func automaticallyPromptsTouchIDOnce() async throws {
         biometricAuthenticator: authenticator
     )
 
-    state.beginUnlockScreenIfNeeded()
-    state.beginUnlockScreenIfNeeded()
+    #expect(authenticator.requestCount == 0)
+    #expect(!state.isTouchIDAuthenticating)
+    state.retryTouchID()
     #expect(authenticator.requestCount == 1)
     #expect(state.isTouchIDAuthenticating)
     authenticator.complete(.cancelled)
@@ -72,7 +73,7 @@ func successfulTouchIDOpensVault() async throws {
         biometricAuthenticator: authenticator
     )
 
-    state.beginUnlockScreenIfNeeded()
+    state.retryTouchID()
     authenticator.complete(.success)
     await Task.yield()
 
@@ -108,7 +109,7 @@ func failedTouchIDPreservesMasterPasswordUnlock() async throws {
         biometricAuthenticator: authenticator
     )
 
-    state.beginUnlockScreenIfNeeded()
+    state.retryTouchID()
     authenticator.complete(.failed)
     await Task.yield()
 
@@ -144,7 +145,7 @@ func masterPasswordFallbackCancelsTouchID() async throws {
         clipboard: RecordingClipboard(),
         biometricAuthenticator: authenticator
     )
-    state.beginUnlockScreenIfNeeded()
+    state.retryTouchID()
 
     state.unlock(masterPassword: password)
     authenticator.completeLastEvenIfCancelled(.failed)
@@ -181,7 +182,7 @@ func backgroundCancelsTouchIDAttempt() async throws {
         clipboard: RecordingClipboard(),
         biometricAuthenticator: authenticator
     )
-    state.beginUnlockScreenIfNeeded()
+    state.retryTouchID()
 
     state.applicationDidEnterBackground()
     authenticator.complete(.success)
@@ -191,6 +192,40 @@ func backgroundCancelsTouchIDAttempt() async throws {
     #expect(!state.isTouchIDAuthenticating)
     #expect(state.screen == .unlock)
     #expect(!session.isUnlocked)
+}
+
+@MainActor
+@Test("the temporary inactive state from the Touch ID sheet does not cancel authentication")
+func resigningActiveDuringTouchIDDoesNotCancelAuthentication() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let keyStore = AppTestBiometricKeyStore()
+    let password = "correct horse battery staple"
+    let session = VaultSession(
+        directory: directory,
+        biometricKeyStore: keyStore,
+        randomBytes: { Data(repeating: 0x58, count: $0) }
+    )
+    try session.create(masterPassword: password)
+    session.lock()
+    try session.unlock(masterPassword: password)
+    try session.enableBiometricUnlock()
+    session.lock()
+    let authenticator = ManualBiometricAuthenticator(available: true)
+    let state = VaultAppState(
+        session: session,
+        scheduler: ManualAppScheduler(),
+        clipboard: RecordingClipboard(),
+        biometricAuthenticator: authenticator
+    )
+
+    state.retryTouchID()
+    state.applicationDidResignActive()
+
+    #expect(authenticator.cancelCount == 0)
+    #expect(state.isTouchIDAuthenticating)
+    #expect(state.screen == .unlock)
 }
 
 @MainActor
@@ -448,6 +483,7 @@ func existingVaultImportPublishesSummary() throws {
     state.useImported(conflictID: refreshedConflict.id)
 
     #expect(state.pendingConflictCount == 0)
+    #expect(state.operationSummary == nil)
     let resolved = try #require(state.items.first(where: { $0.id == importedConflict.id }))
     #expect(resolved.title == importedConflict.title)
     #expect(resolved.username == importedConflict.username)
@@ -474,6 +510,7 @@ func existingVaultImportPublishesSummary() throws {
     state.keepLocal(conflictID: repeatedConflict.id)
 
     #expect(state.pendingConflictCount == 0)
+    #expect(state.operationSummary == nil)
     #expect(state.items.first(where: { $0.id == editedLocal.id }) == editedLocal)
 
     let editedAgain = LoginItem(
@@ -509,6 +546,7 @@ func existingVaultImportPublishesSummary() throws {
 
     let manuallyResolved = try #require(state.items.first(where: { $0.id == editedAgain.id }))
     #expect(state.pendingConflictCount == 0)
+    #expect(state.operationSummary == nil)
     #expect(manuallyResolved.title == manual.title)
     #expect(manuallyResolved.password == manual.password)
     #expect(manuallyResolved.revision == max(editedAgain.revision, importedConflict.revision) + 1)
@@ -805,6 +843,7 @@ func backgroundLockClearsClipboardCountdownFeedback() throws {
 
     #expect(state.clipboardSecondsRemaining == nil)
     #expect(state.screen == .unlock)
+    #expect(!session.isUnlocked)
 }
 
 @MainActor
@@ -977,6 +1016,28 @@ func titleSearchAndCategoryFilterCombineInMemory() throws {
     state.selectCategory(nil)
     #expect(state.selectedCategory == nil)
     #expect(Set(state.items.map(\.id)) == Set([bankWork.id, bankPersonal.id]))
+}
+
+@MainActor
+@Test("library search fuzzy matches title username website category and note")
+func librarySearchMatchesAllVisibleFields() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let session = VaultSession(directory: directory)
+    try session.create(masterPassword: "correct horse battery staple")
+    let item = LoginItem(
+        id: UUID(), title: "标题关键字", username: "用户名关键字", password: "secret",
+        url: "https://网站关键字.example", category: "分类关键字", note: "备注关键字",
+        createdAt: .now, updatedAt: .now, revision: 0, deviceID: UUID()
+    )
+    try session.loginItemRepository().create(item)
+    let state = VaultAppState(session: session)
+
+    for query in ["标题关键", "用户名关键", "网站关键", "分类关键", "备注关键"] {
+        state.searchText = query
+        #expect(state.items.map(\.id) == [item.id])
+    }
 }
 
 @MainActor
