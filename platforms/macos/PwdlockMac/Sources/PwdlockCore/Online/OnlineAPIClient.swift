@@ -13,6 +13,7 @@ public struct OnlineSession: Sendable, Equatable {
 
 public struct OnlineDevice: Sendable, Equatable, Decodable { public let id: UUID }
 public struct OnlineVault: Sendable, Equatable, Decodable { public let id: UUID; public let encryptedKeyEnvelope: String }
+public struct OnlineRemoteChange: Sendable, Equatable, Decodable { public let sequence: String; public let changeId: String; public let deviceId: UUID; public let ciphertext: String; public let signature: String }
 
 public protocol OnlineAuthenticating: Sendable {
     func register(loginName: String, password: String) async throws -> OnlineSession
@@ -59,6 +60,20 @@ public struct OnlineAPIClient: OnlineAuthenticating, Sendable {
         catch { throw OnlineAPIError.transportFailed }
     }
 
+    public func appendChange(vaultID: UUID, changeID: UUID, deviceID: UUID, envelope: OnlineSyncEnvelope, accessToken: String) async throws -> OnlineRemoteChange {
+        try await authorized(path: "vaults/\(vaultID.uuidString)/changes", body: ChangeRequest(changeId: changeID.uuidString, deviceId: deviceID.uuidString, ciphertext: envelope.ciphertext, signature: envelope.signature), token: accessToken)
+    }
+
+    public func listChanges(vaultID: UUID, after: String? = nil, accessToken: String) async throws -> [OnlineRemoteChange] {
+        var components = URLComponents(url: baseURL.appending(path: "vaults/\(vaultID.uuidString)/changes"), resolvingAgainstBaseURL: false)!
+        if let after { components.queryItems = [URLQueryItem(name: "after", value: after)] }
+        var request = URLRequest(url: components.url!)
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await transport(request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw OnlineAPIError.rejected }
+        return try JSONDecoder().decode([OnlineRemoteChange].self, from: data)
+    }
+
     private func authenticate(path: String, loginName: String, password: String) async throws -> OnlineSession {
         var request = URLRequest(url: baseURL.appending(path: path))
         request.httpMethod = "POST"
@@ -95,4 +110,5 @@ public struct OnlineAPIClient: OnlineAuthenticating, Sendable {
     private struct TokenResponse: Codable { let accessToken: String }
     private struct DeviceRequest: Codable { let label: String; let publicSigningKey: String }
     private struct VaultRequest: Codable { let encryptedKeyEnvelope: String }
+    private struct ChangeRequest: Codable { let changeId: String; let deviceId: String; let ciphertext: String; let signature: String }
 }
