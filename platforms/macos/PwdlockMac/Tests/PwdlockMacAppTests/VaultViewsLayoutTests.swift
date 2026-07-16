@@ -106,3 +106,28 @@ func touchIDUIContract() throws {
     #expect(appSource.contains("applicationDidResignActive"))
     #expect(appSource.contains("state.applicationDidResignActive()"))
 }
+
+@Test("local login detail uses the same structured dark card as the online password library")
+func localLoginDetailLayoutContract() throws {
+    let testFile = URL(filePath: #filePath)
+    let packageDirectory = testFile
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let source = try String(
+        contentsOf: packageDirectory.appending(path: "Sources/PwdlockMacApp/VaultViews.swift"),
+        encoding: .utf8
+    )
+
+    let componentStart = try #require(source.range(of: "private struct LoginDetailView: View"))
+    let followingViewStart = try #require(
+        source.range(of: "private struct ClipboardStatusView: View", range: componentStart.upperBound..<source.endIndex)
+    )
+    let component = String(source[componentStart.lowerBound..<followingViewStart.lowerBound])
+
+    #expect(component.contains("OnlineDetailRow(\"用户名\")"))
+    #expect(component.contains(".truncationMode(.middle)"))
+    #expect(component.contains(".background(Color.black.opacity(0.16))"))
+    #expect(component.contains("ClipboardStatusView("))
+    #expect(component.contains("Button(\"打开网站\", systemImage: \"arrow.up.right.square\""))
+}
