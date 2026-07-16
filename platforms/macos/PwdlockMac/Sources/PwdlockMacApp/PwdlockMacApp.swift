@@ -48,7 +48,7 @@ private struct PasswordModeRootView: View {
         Group {
             switch selectedMode {
             case .local:
-                VaultRootView(state: localState)
+                VaultRootView(state: localState, switchToOnline: { switchToMode(.online) })
             case .online:
                 OnlineVaultRootView(switchToMode: switchToMode, account: onlineState)
             case nil:
@@ -58,6 +58,13 @@ private struct PasswordModeRootView: View {
     }
 
     private func switchToMode(_ mode: PasswordStorageMode) {
+        guard mode != selectedMode else { return }
+        switch mode {
+        case .local:
+            onlineState.lockOnlineVault()
+        case .online:
+            localState.lock()
+        }
         persistedMode = mode.rawValue
     }
 }

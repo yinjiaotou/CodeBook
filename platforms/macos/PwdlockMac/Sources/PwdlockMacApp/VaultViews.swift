@@ -366,6 +366,7 @@ private struct OnlineLoginItemEditor: View {
 
 struct VaultRootView: View {
     @ObservedObject var state: VaultAppState
+    let switchToOnline: () -> Void
 
     var body: some View {
         Group {
@@ -376,6 +377,15 @@ struct VaultRootView: View {
                 UnlockVaultView(state: state)
             case .library:
                 VaultLibraryView(state: state)
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button("切换到在线模式", action: switchToOnline)
+                } label: {
+                    Label("模式", systemImage: "arrow.triangle.2.circlepath")
+                }
             }
         }
         .alert("密码锁", isPresented: errorIsPresented) {
