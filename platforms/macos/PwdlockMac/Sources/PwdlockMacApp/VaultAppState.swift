@@ -413,7 +413,8 @@ final class VaultAppState: ObservableObject {
         pendingConflicts = []
         touchIDAttemptID = nil
         isTouchIDAuthenticating = false
-        screen = .unlock
+        let metadataURL = session.directory.appendingPathComponent("vault.meta", isDirectory: false)
+        screen = FileManager.default.fileExists(atPath: metadataURL.path) ? .unlock : .create
         refreshTouchIDState()
     }
 

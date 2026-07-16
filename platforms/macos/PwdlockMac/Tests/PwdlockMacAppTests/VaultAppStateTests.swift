@@ -582,6 +582,19 @@ func backgroundingNewVaultSetupKeepsCreationScreen() throws {
 }
 
 @MainActor
+@Test("locking an unconfigured local vault keeps the creation screen visible")
+func lockingUnconfiguredVaultKeepsCreationScreen() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let state = VaultAppState(directory: directory)
+
+    state.lock()
+
+    #expect(state.screen == .create)
+}
+
+@MainActor
 @Test("library state can present master password change without a selected login")
 func libraryCanPresentMasterPasswordChangeWithoutSelection() throws {
     let directory = FileManager.default.temporaryDirectory
