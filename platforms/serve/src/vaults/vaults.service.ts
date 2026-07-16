@@ -63,7 +63,13 @@ export class VaultsService {
     }
     const rawPublicKey = Buffer.from(device.publicSigningKey, 'base64');
     const signature = Buffer.from(dto.signature, 'base64');
-    const message = Buffer.from(`pwdlock.sync.v1\u0000${vaultID}\u0000${dto.changeId}\u0000${dto.ciphertext}`, 'utf8');
+    // UUIDs are protocol identifiers, not display strings. The client signs their
+    // canonical lowercase RFC 4122 representation, while HTTP routers preserve
+    // whatever casing was used in the request path/body.
+    const message = Buffer.from(
+      `pwdlock.sync.v1\u0000${vaultID.toLowerCase()}\u0000${dto.changeId.toLowerCase()}\u0000${dto.ciphertext}`,
+      'utf8'
+    );
     const spkiPrefix = Buffer.from('302a300506032b6570032100', 'hex');
     const publicKey = createPublicKey({ key: Buffer.concat([spkiPrefix, rawPublicKey]), format: 'der', type: 'spki' });
     if (!verify(null, message, publicKey, signature)) throw new ForbiddenException('密文签名无效。');

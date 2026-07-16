@@ -86,7 +86,16 @@ public struct OnlineAPIClient: OnlineAuthenticating, Sendable {
     }
 
     public func appendChange(vaultID: UUID, changeID: UUID, deviceID: UUID, envelope: OnlineSyncEnvelope, accessToken: String) async throws -> OnlineRemoteChange {
-        try await authorized(path: "vaults/\(vaultID.uuidString)/changes", body: ChangeRequest(changeId: changeID.uuidString, deviceId: deviceID.uuidString, ciphertext: envelope.ciphertext, signature: envelope.signature), token: accessToken)
+        try await authorized(
+            path: "vaults/\(vaultID.uuidString.lowercased())/changes",
+            body: ChangeRequest(
+                changeId: changeID.uuidString.lowercased(),
+                deviceId: deviceID.uuidString.lowercased(),
+                ciphertext: envelope.ciphertext,
+                signature: envelope.signature
+            ),
+            token: accessToken
+        )
     }
 
     public func listChanges(vaultID: UUID, after: String? = nil, accessToken: String) async throws -> [OnlineRemoteChange] {
