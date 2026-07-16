@@ -2,6 +2,7 @@ import Foundation
 
 public enum OnlineAPIError: Error, Equatable {
     case invalidResponse
+    case unauthorized
     case rejected
     case transportFailed
 }
@@ -65,7 +66,8 @@ public struct OnlineAPIClient: OnlineAuthenticating, Sendable {
         var request = URLRequest(url: baseURL.appending(path: "devices"))
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await transport(request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw OnlineAPIError.rejected }
+        guard let http = response as? HTTPURLResponse else { throw OnlineAPIError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else { throw responseError(http) }
         return try JSONDecoder().decode([OnlineDevice].self, from: data)
     }
 
@@ -79,7 +81,7 @@ public struct OnlineAPIClient: OnlineAuthenticating, Sendable {
         do {
             let (data, response) = try await transport(request)
             guard let response = response as? HTTPURLResponse else { throw OnlineAPIError.invalidResponse }
-            guard (200..<300).contains(response.statusCode) else { throw OnlineAPIError.rejected }
+            guard (200..<300).contains(response.statusCode) else { throw responseError(response) }
             return try JSONDecoder().decode([OnlineVault].self, from: data)
         } catch let error as OnlineAPIError { throw error }
         catch { throw OnlineAPIError.transportFailed }
@@ -104,7 +106,8 @@ public struct OnlineAPIClient: OnlineAuthenticating, Sendable {
         var request = URLRequest(url: components.url!)
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await transport(request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw OnlineAPIError.rejected }
+        guard let http = response as? HTTPURLResponse else { throw OnlineAPIError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else { throw responseError(http) }
         return try JSONDecoder().decode([OnlineRemoteChange].self, from: data)
     }
 
@@ -116,7 +119,7 @@ public struct OnlineAPIClient: OnlineAuthenticating, Sendable {
         do {
             let (data, response) = try await transport(request)
             guard let response = response as? HTTPURLResponse else { throw OnlineAPIError.invalidResponse }
-            guard (200..<300).contains(response.statusCode) else { throw OnlineAPIError.rejected }
+            guard (200..<300).contains(response.statusCode) else { throw responseError(response) }
             return OnlineSession(accessToken: try JSONDecoder().decode(TokenResponse.self, from: data).accessToken)
         } catch let error as OnlineAPIError {
             throw error
@@ -134,7 +137,7 @@ public struct OnlineAPIClient: OnlineAuthenticating, Sendable {
         do {
             let (data, response) = try await transport(request)
             guard let response = response as? HTTPURLResponse else { throw OnlineAPIError.invalidResponse }
-            guard (200..<300).contains(response.statusCode) else { throw OnlineAPIError.rejected }
+            guard (200..<300).contains(response.statusCode) else { throw responseError(response) }
             return try JSONDecoder().decode(Response.self, from: data)
         } catch let error as OnlineAPIError { throw error }
         catch { throw OnlineAPIError.transportFailed }
@@ -145,4 +148,8 @@ public struct OnlineAPIClient: OnlineAuthenticating, Sendable {
     private struct DeviceRequest: Codable { let label: String; let publicSigningKey: String }
     private struct VaultRequest: Codable { let encryptedKeyEnvelope: String }
     private struct ChangeRequest: Codable { let changeId: String; let deviceId: String; let ciphertext: String; let signature: String }
+
+    private func responseError(_ response: HTTPURLResponse) -> OnlineAPIError {
+        response.statusCode == 401 ? .unauthorized : .rejected
+    }
 }

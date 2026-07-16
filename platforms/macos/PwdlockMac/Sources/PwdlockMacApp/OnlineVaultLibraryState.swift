@@ -22,6 +22,7 @@ final class OnlineVaultLibraryState: ObservableObject {
     private let vaultKey: Data
     private let database: EncryptedDatabase
     private let repository: LoginItemRepository
+    private let onSessionExpired: @MainActor () -> Void
     private let keyStore = OnlineDeviceKeyStore()
     private var signingKey: Curve25519.Signing.PrivateKey?
     private var deviceID: UUID?
@@ -31,7 +32,8 @@ final class OnlineVaultLibraryState: ObservableObject {
         masterPassword: String,
         accountID: String,
         accessToken: String,
-        serviceURL: URL
+        serviceURL: URL,
+        onSessionExpired: @escaping @MainActor () -> Void
     ) throws -> OnlineVaultLibraryState {
         let vaultKey = try OnlineVaultAccess.unlockKey(
             encryptedKeyEnvelope: vault.encryptedKeyEnvelope,
@@ -54,7 +56,8 @@ final class OnlineVaultLibraryState: ObservableObject {
                 api: OnlineAPIClient(baseURL: serviceURL),
                 vaultKey: vaultKey,
                 database: database,
-                repository: repository
+                repository: repository,
+                onSessionExpired: onSessionExpired
             )
         } catch {
             database.close()
@@ -69,7 +72,8 @@ final class OnlineVaultLibraryState: ObservableObject {
         api: OnlineAPIClient,
         vaultKey: Data,
         database: EncryptedDatabase,
-        repository: LoginItemRepository
+        repository: LoginItemRepository,
+        onSessionExpired: @escaping @MainActor () -> Void
     ) {
         self.vaultID = vaultID
         self.accountID = accountID
@@ -78,6 +82,7 @@ final class OnlineVaultLibraryState: ObservableObject {
         self.vaultKey = vaultKey
         self.database = database
         self.repository = repository
+        self.onSessionExpired = onSessionExpired
         reloadItems()
         Task { await configureDevice() }
     }
@@ -155,6 +160,8 @@ final class OnlineVaultLibraryState: ObservableObject {
             // Entering an unlocked online vault must refresh the encrypted cache
             // once, rather than relying on the user to discover the sync button.
             await downloadChanges()
+        } catch OnlineAPIError.unauthorized {
+            onSessionExpired()
         } catch {
             errorMessage = "无法准备同步设备，请检查网络后重试。"
         }
@@ -189,6 +196,8 @@ final class OnlineVaultLibraryState: ObservableObject {
                 try OnlineSyncCursorStore.save(remote.sequence, vaultID: vaultID, in: database)
                 reloadItems()
                 statusMessage = operation == .upsert ? "已加密保存并同步。" : "已删除并同步。"
+            } catch OnlineAPIError.unauthorized {
+                onSessionExpired()
             } catch {
                 errorMessage = "无法同步本次修改，当前条目未改变。"
             }
@@ -215,6 +224,8 @@ final class OnlineVaultLibraryState: ObservableObject {
             }
             reloadItems()
             statusMessage = changes.isEmpty ? "已是最新状态。" : "已同步 \(changes.count) 项变更。"
+        } catch OnlineAPIError.unauthorized {
+            onSessionExpired()
         } catch {
             errorMessage = "同步失败，已保留本机加密缓存。"
         }

@@ -20,6 +20,16 @@ final class OnlineAccountState: ObservableObject {
     func login() { authenticate(register: false) }
     func register() { authenticate(register: true) }
     func signOut() { lockOnlineVault(); deleteToken(); password = ""; isSignedIn = false }
+
+    func expireSession() {
+        lockOnlineVault()
+        deleteToken()
+        password = ""
+        onlineVaults = []
+        onlineVaultCreated = false
+        isSignedIn = false
+        errorMessage = "登录状态已过期，请重新登录。"
+    }
     func lockOnlineVault() {
         onlineLibrary?.close()
         onlineLibrary = nil
@@ -37,7 +47,8 @@ final class OnlineAccountState: ObservableObject {
                 masterPassword: masterPassword,
                 accountID: loginName.trimmingCharacters(in: .whitespacesAndNewlines),
                 accessToken: token,
-                serviceURL: serviceURL
+                serviceURL: serviceURL,
+                onSessionExpired: { [weak self] in self?.expireSession() }
             )
             onlineLibrary = library
             isOnlineVaultUnlocked = true
