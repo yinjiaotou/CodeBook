@@ -3,6 +3,19 @@ import SwiftUI
 import UniformTypeIdentifiers
 import PwdlockCore
 
+private extension View {
+    func pwdlockInputField() -> some View {
+        controlSize(.large)
+            .font(.system(size: 16))
+            .frame(minHeight: 38)
+    }
+
+    func pwdlockInputForm() -> some View {
+        controlSize(.large)
+            .font(.system(size: 16))
+    }
+}
+
 struct PasswordModeSelectionView: View {
     let selectMode: (PasswordStorageMode) -> Void
 
@@ -124,8 +137,10 @@ struct OnlineVaultRootView: View {
             .pickerStyle(.segmented)
             TextField("账号", text: $account.loginName)
                 .textContentType(.username)
+                .pwdlockInputField()
             SecureField("账户密码", text: $account.password)
                 .textContentType(.password)
+                .pwdlockInputField()
             if let errorMessage = account.errorMessage { Text(errorMessage).font(.footnote).foregroundStyle(.red) }
             Button(accountAction == .login ? "登录在线密码库" : "创建在线账号") {
                 if accountAction == .login { account.login() } else { account.register() }
@@ -145,8 +160,8 @@ struct OnlineVaultRootView: View {
             if account.isSignedIn && !account.onlineVaultCreated {
                 Divider().padding(.vertical, 6)
                 Text("创建在线密码库").font(.headline)
-                SecureField("在线 Vault 主密码", text: $vaultPassword)
-                SecureField("确认主密码", text: $vaultPasswordConfirmation)
+                SecureField("在线 Vault 主密码", text: $vaultPassword).pwdlockInputField()
+                SecureField("确认主密码", text: $vaultPasswordConfirmation).pwdlockInputField()
                 Text("此主密码仅用于本机加密 Vault Key，不会发送到服务端。")
                     .font(.footnote).foregroundStyle(.secondary)
                 Button("创建在线密码库") {
@@ -164,6 +179,7 @@ struct OnlineVaultRootView: View {
                     .font(.footnote).foregroundStyle(.secondary)
                 SecureField("Vault 主密码", text: $unlockPassword)
                     .onSubmit(unlockOnlineVault)
+                    .pwdlockInputField()
                 Button("解锁在线密码库", action: unlockOnlineVault)
                 .buttonStyle(.borderedProminent)
                 .disabled(unlockPassword.isEmpty || account.isWorking)
@@ -206,6 +222,7 @@ private struct OnlineVaultLibraryView: View {
             List(selection: $selectedID) {
                 Section("搜索") {
                     TextField("搜索标题、用户名、网站、分类或备注", text: $state.searchText)
+                        .pwdlockInputField()
                 }
                 Section("登录信息") {
                     ForEach(state.items, id: \.id) { item in
@@ -349,7 +366,6 @@ private struct OnlineLoginDetailView: View {
                 OnlineDetailRow("网站") {
                     HStack(spacing: 12) {
                         Text(item.url.isEmpty ? "未填写" : item.url)
-                            .textSelection(.enabled)
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -478,6 +494,7 @@ private struct OnlineLoginItemEditor: View {
                 .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || state.isWorking)
             }
         }
+        .pwdlockInputForm()
         .padding()
         .frame(width: 440)
     }
@@ -539,8 +556,8 @@ private struct CreateVaultView: View {
             Image(systemName: "lock.shield")
                 .font(.system(size: 42))
             Text("创建密码库").font(.title2)
-            SecureField("主密码", text: $password)
-            SecureField("确认主密码", text: $confirmation)
+            SecureField("主密码", text: $password).pwdlockInputField()
+            SecureField("确认主密码", text: $confirmation).pwdlockInputField()
             Text("至少使用 12 个字符。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -573,6 +590,7 @@ private struct UnlockVaultView: View {
             Text("解锁密码库").font(.title2)
             SecureField("主密码", text: $password)
                 .onSubmit(unlock)
+                .pwdlockInputField()
             Button("解锁", action: unlock)
                 .buttonStyle(.borderedProminent)
                 .disabled(password.isEmpty)
@@ -608,6 +626,7 @@ private struct VaultLibraryView: View {
             List(selection: $selectedID) {
                 Section("搜索") {
                     TextField("搜索标题、用户名、网站、分类或备注", text: $state.searchText)
+                        .pwdlockInputField()
                 }
 
                 Section("登录信息") {
@@ -730,6 +749,7 @@ private struct ExistingVaultImportView: View {
                     .buttonStyle(.borderedProminent)
             }
         }
+        .pwdlockInputForm()
         .padding()
         .frame(width: 460)
     }
@@ -954,6 +974,7 @@ private struct ManualMergeView: View {
                 .disabled(title.isEmpty)
             }
         }
+        .pwdlockInputForm()
         .padding()
         .frame(width: 460)
     }
@@ -1025,6 +1046,7 @@ private struct ImportArchiveView: View {
                     .buttonStyle(.borderedProminent)
             }
         }
+        .pwdlockInputForm()
         .padding()
         .frame(width: 460)
     }
@@ -1109,6 +1131,7 @@ private struct ExportArchiveView: View {
                     .disabled(exportPassword.isEmpty || exportPassword != confirmation)
             }
         }
+        .pwdlockInputForm()
         .padding()
         .frame(width: 420)
     }
@@ -1180,7 +1203,6 @@ private struct LoginDetailView: View {
                 OnlineDetailRow("网站") {
                     HStack(spacing: 12) {
                         Text(item.url.isEmpty ? "未填写" : item.url)
-                            .textSelection(.enabled)
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1286,6 +1308,7 @@ private struct NewLoginItemView: View {
                 .disabled(title.isEmpty)
             }
         }
+        .pwdlockInputForm()
         .padding()
         .frame(width: 420)
     }
@@ -1339,6 +1362,7 @@ private struct EditLoginItemView: View {
                 .disabled(title.isEmpty)
             }
         }
+        .pwdlockInputForm()
         .padding()
         .frame(width: 420)
     }
@@ -1380,6 +1404,7 @@ private struct ChangeMasterPasswordView: View {
                 )
             }
         }
+        .pwdlockInputForm()
         .padding()
         .frame(width: 420)
     }

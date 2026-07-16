@@ -54,5 +54,8 @@ func onlineLoginDetailLayoutContract() throws {
     #expect(viewsSource.contains(".background(Color.black.opacity(0.16))"))
     #expect(viewsSource.contains("Button(\"打开网站\", systemImage: \"arrow.up.right.square\""))
     #expect(viewsSource.contains("Capsule()"))
+    #expect(viewsSource.contains("func pwdlockInputField() -> some View"))
+    #expect(viewsSource.contains("func pwdlockInputForm() -> some View"))
+    #expect(viewsSource.contains(".frame(minHeight: 38)"))
     #expect(appSource.contains(".controlSize(.large)"))
 }
