@@ -19,7 +19,15 @@ final class OnlineAccountState: ObservableObject {
 
     func login() { authenticate(register: false) }
     func register() { authenticate(register: true) }
-    func signOut() { lockOnlineVault(); deleteToken(); password = ""; isSignedIn = false }
+    func signOut() {
+        lockOnlineVault()
+        deleteToken()
+        password = ""
+        onlineVaults = []
+        onlineVaultCreated = false
+        isSignedIn = false
+        errorMessage = nil
+    }
 
     func expireSession() {
         lockOnlineVault()

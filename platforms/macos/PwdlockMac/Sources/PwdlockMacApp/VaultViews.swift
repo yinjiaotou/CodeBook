@@ -80,7 +80,12 @@ struct OnlineVaultRootView: View {
 
     var body: some View {
         if account.isOnlineVaultUnlocked, let library = account.onlineLibrary {
-            OnlineVaultLibraryView(state: library, lock: account.lockOnlineVault, switchToLocal: { switchToMode(.local) })
+            OnlineVaultLibraryView(
+                state: library,
+                lock: account.lockOnlineVault,
+                signOut: account.signOut,
+                switchToLocal: { switchToMode(.local) }
+            )
         } else {
         VStack(spacing: 18) {
             HStack {
@@ -89,6 +94,10 @@ struct OnlineVaultRootView: View {
                 Spacer()
                 Menu {
                     Button("切换到本地模式") { switchToMode(.local) }
+                    if account.isSignedIn {
+                        Divider()
+                        Button("退出登录", role: .destructive) { account.signOut() }
+                    }
                 } label: {
                     Label("模式", systemImage: "arrow.triangle.2.circlepath")
                 }
@@ -151,10 +160,8 @@ struct OnlineVaultRootView: View {
                 Text("请输入 Vault 主密码以在本机解锁。")
                     .font(.footnote).foregroundStyle(.secondary)
                 SecureField("Vault 主密码", text: $unlockPassword)
-                Button("解锁在线密码库") {
-                    account.unlockOnlineVault(masterPassword: unlockPassword)
-                    unlockPassword = ""
-                }
+                    .onSubmit(unlockOnlineVault)
+                Button("解锁在线密码库", action: unlockOnlineVault)
                 .buttonStyle(.borderedProminent)
                 .disabled(unlockPassword.isEmpty || account.isWorking)
                 if account.isOnlineVaultUnlocked {
@@ -167,11 +174,18 @@ struct OnlineVaultRootView: View {
         .padding(36)
         }
     }
+
+    private func unlockOnlineVault() {
+        guard !unlockPassword.isEmpty, !account.isWorking else { return }
+        account.unlockOnlineVault(masterPassword: unlockPassword)
+        unlockPassword = ""
+    }
 }
 
 private struct OnlineVaultLibraryView: View {
     @ObservedObject var state: OnlineVaultLibraryState
     let lock: () -> Void
+    let signOut: () -> Void
     let switchToLocal: () -> Void
     @State private var selectedID: UUID?
     @State private var showingNewItem = false
@@ -258,6 +272,9 @@ private struct OnlineVaultLibraryView: View {
             }
             .disabled(!state.isDeviceReady || state.isWorking)
             Button("锁定", systemImage: "lock", action: lock)
+            Button(role: .destructive, action: signOut) {
+                Label("退出登录", systemImage: "rectangle.portrait.and.arrow.right")
+            }
             Menu {
                 Button("切换到本地模式", action: switchToLocal)
             } label: {
