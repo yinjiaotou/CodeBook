@@ -319,21 +319,75 @@ private struct OnlineLoginDetailView: View {
     @State private var showingEditor = false
 
     var body: some View {
-        Form {
-            Section {
-                LabeledContent("用户名", value: item.username)
-                LabeledContent("密码") {
-                    HStack {
-                        Text(showingPassword ? item.password : String(repeating: "•", count: max(item.password.count, 8)))
-                        Button(showingPassword ? "隐藏" : "显示") { showingPassword.toggle() }
-                        Button("复制", action: copyPassword)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                OnlineDetailRow("用户名") {
+                    HStack(spacing: 12) {
+                        Text(item.username.isEmpty ? "未填写" : item.username)
+                            .textSelection(.enabled)
+                        Spacer(minLength: 12)
+                        Button("复制") { NSPasteboard.general.setString(item.username, forType: .string) }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(.secondary)
                     }
                 }
-                LabeledContent("网站", value: item.url)
-                LabeledContent("分类", value: item.category)
-                if !item.note.isEmpty { LabeledContent("备注", value: item.note) }
+                Divider()
+                OnlineDetailRow("密码") {
+                    HStack(spacing: 12) {
+                        Text(showingPassword ? item.password : String(repeating: "•", count: max(item.password.count, 8)))
+                            .fontDesign(.monospaced)
+                            .textSelection(.enabled)
+                            .lineLimit(1)
+                        Spacer(minLength: 12)
+                        Button(showingPassword ? "隐藏" : "显示") { showingPassword.toggle() }
+                            .buttonStyle(.borderless)
+                        Button("复制", action: copyPassword)
+                            .buttonStyle(.borderless)
+                    }
+                }
+                Divider()
+                OnlineDetailRow("网站") {
+                    HStack(spacing: 12) {
+                        Text(item.url.isEmpty ? "未填写" : item.url)
+                            .textSelection(.enabled)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .foregroundStyle(item.url.isEmpty ? .secondary : .primary)
+                        Spacer(minLength: 12)
+                        if !item.url.isEmpty {
+                            Button("打开网站", systemImage: "arrow.up.right.square", action: openWebsite)
+                                .labelStyle(.iconOnly)
+                                .buttonStyle(.borderless)
+                                .help("在浏览器中打开网站")
+                        }
+                    }
+                }
+                Divider()
+                OnlineDetailRow("分类") {
+                    Text(item.category.isEmpty ? "未分类" : item.category)
+                        .foregroundStyle(.blue)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(.blue.opacity(0.16), in: Capsule())
+                }
+                if !item.note.isEmpty {
+                    Divider()
+                    OnlineDetailRow("备注") {
+                        Text(item.note)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(.white.opacity(0.12))
+            }
+            .padding(32)
+            .frame(maxWidth: 880, alignment: .leading)
         }
+        .background(Color.black.opacity(0.16))
         .navigationTitle(item.title)
         .toolbar {
             ToolbarItemGroup {
@@ -344,6 +398,36 @@ private struct OnlineLoginDetailView: View {
             }
         }
         .sheet(isPresented: $showingEditor) { OnlineLoginItemEditor(state: state, item: item) }
+    }
+
+    private func openWebsite() {
+        let address = item.url.contains("://") ? item.url : "https://\(item.url)"
+        guard let url = URL(string: address), let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) else {
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+}
+
+private struct OnlineDetailRow<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 28) {
+            Text(title)
+                .foregroundStyle(.secondary)
+                .frame(width: 90, alignment: .leading)
+            content
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 28)
+        .padding(.vertical, 22)
     }
 }
 

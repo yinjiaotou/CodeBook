@@ -34,3 +34,21 @@ func onlineSignOutConfirmationContract() throws {
     #expect(viewsSource.contains("退出后将锁定在线密码库，并清除这台 Mac 上的登录状态。"))
     #expect(viewsSource.contains("showingSignOutConfirmation = true"))
 }
+
+@Test("online login detail uses a structured dark card that protects long values from overflowing")
+func onlineLoginDetailLayoutContract() throws {
+    let packageDirectory = URL(filePath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let viewsSource = try String(
+        contentsOf: packageDirectory.appending(path: "Sources/PwdlockMacApp/VaultViews.swift"),
+        encoding: .utf8
+    )
+
+    #expect(viewsSource.contains("private struct OnlineDetailRow<Content: View>: View"))
+    #expect(viewsSource.contains(".truncationMode(.middle)"))
+    #expect(viewsSource.contains(".background(Color.black.opacity(0.16))"))
+    #expect(viewsSource.contains("Button(\"打开网站\", systemImage: \"arrow.up.right.square\""))
+    #expect(viewsSource.contains("Capsule()"))
+}
