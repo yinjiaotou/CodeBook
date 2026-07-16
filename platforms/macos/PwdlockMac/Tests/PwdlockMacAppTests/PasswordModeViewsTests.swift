@@ -28,7 +28,6 @@ func onlineSignOutConfirmationContract() throws {
         contentsOf: packageDirectory.appending(path: "Sources/PwdlockMacApp/VaultViews.swift"),
         encoding: .utf8
     )
-
     #expect(viewsSource.contains("@State private var showingSignOutConfirmation = false"))
     #expect(viewsSource.contains("confirmationDialog(\"退出在线账号？\""))
     #expect(viewsSource.contains("退出后将锁定在线密码库，并清除这台 Mac 上的登录状态。"))
@@ -45,10 +44,15 @@ func onlineLoginDetailLayoutContract() throws {
         contentsOf: packageDirectory.appending(path: "Sources/PwdlockMacApp/VaultViews.swift"),
         encoding: .utf8
     )
+    let appSource = try String(
+        contentsOf: packageDirectory.appending(path: "Sources/PwdlockMacApp/PwdlockMacApp.swift"),
+        encoding: .utf8
+    )
 
     #expect(viewsSource.contains("private struct OnlineDetailRow<Content: View>: View"))
     #expect(viewsSource.contains(".truncationMode(.middle)"))
     #expect(viewsSource.contains(".background(Color.black.opacity(0.16))"))
     #expect(viewsSource.contains("Button(\"打开网站\", systemImage: \"arrow.up.right.square\""))
     #expect(viewsSource.contains("Capsule()"))
+    #expect(appSource.contains(".controlSize(.large)"))
 }

@@ -55,6 +55,7 @@ private struct PasswordModeRootView: View {
                 PasswordModeSelectionView(selectMode: switchToMode)
             }
         }
+        .controlSize(.large)
     }
 
     private func switchToMode(_ mode: PasswordStorageMode) {

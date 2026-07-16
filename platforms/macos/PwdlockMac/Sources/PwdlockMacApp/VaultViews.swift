@@ -352,8 +352,8 @@ private struct OnlineLoginDetailView: View {
                             .textSelection(.enabled)
                             .lineLimit(1)
                             .truncationMode(.middle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .foregroundStyle(item.url.isEmpty ? .secondary : .primary)
-                        Spacer(minLength: 12)
                         if !item.url.isEmpty {
                             Button("打开网站", systemImage: "arrow.up.right.square", action: openWebsite)
                                 .labelStyle(.iconOnly)
@@ -1183,8 +1183,8 @@ private struct LoginDetailView: View {
                             .textSelection(.enabled)
                             .lineLimit(1)
                             .truncationMode(.middle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .foregroundStyle(item.url.isEmpty ? .secondary : .primary)
-                        Spacer(minLength: 12)
                         if !item.url.isEmpty {
                             Button("打开网站", systemImage: "arrow.up.right.square", action: openWebsite)
                                 .labelStyle(.iconOnly)

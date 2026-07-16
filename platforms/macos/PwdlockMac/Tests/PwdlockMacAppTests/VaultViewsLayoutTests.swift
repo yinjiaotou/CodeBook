@@ -127,6 +127,7 @@ func localLoginDetailLayoutContract() throws {
 
     #expect(component.contains("OnlineDetailRow(\"用户名\")"))
     #expect(component.contains(".truncationMode(.middle)"))
+    #expect(component.contains(".frame(maxWidth: .infinity, alignment: .leading)"))
     #expect(component.contains(".background(Color.black.opacity(0.16))"))
     #expect(component.contains("ClipboardStatusView("))
     #expect(component.contains("Button(\"打开网站\", systemImage: \"arrow.up.right.square\""))
