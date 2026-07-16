@@ -79,6 +79,9 @@ struct OnlineVaultRootView: View {
     }
 
     var body: some View {
+        if account.isOnlineVaultUnlocked {
+            OnlineVaultLibraryView(lock: account.lockOnlineVault, switchToLocal: { switchToMode(.local) })
+        } else {
         VStack(spacing: 18) {
             HStack {
                 Text("在线密码库")
@@ -162,6 +165,29 @@ struct OnlineVaultRootView: View {
         }
         .frame(width: 360)
         .padding(36)
+        }
+    }
+}
+
+private struct OnlineVaultLibraryView: View {
+    let lock: () -> Void
+    let switchToLocal: () -> Void
+
+    var body: some View {
+        VStack(spacing: 18) {
+            HStack {
+                Text("在线密码库").font(.title2.weight(.semibold))
+                Spacer()
+                Button("锁定", systemImage: "lock") { lock() }
+                Menu { Button("切换到本地模式", action: switchToLocal) } label: {
+                    Label("模式", systemImage: "arrow.triangle.2.circlepath")
+                }
+            }
+            .frame(maxWidth: .infinity)
+            ContentUnavailableView("在线密码库已解锁", systemImage: "lock.open", description: Text("同步完成后，登录条目将在这里显示。"))
+        }
+        .frame(minWidth: 760, minHeight: 520)
+        .padding(28)
     }
 }
 
