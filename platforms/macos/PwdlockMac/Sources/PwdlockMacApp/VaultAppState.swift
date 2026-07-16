@@ -171,9 +171,18 @@ final class VaultAppState: ObservableObject {
             reloadItems()
             refreshTouchIDState()
             recordActivity()
+        } catch VaultSessionError.vaultAlreadyExists {
+            operationSummary = nil
+            errorMessage = "当前设备已存在本地密码库。请先解锁该密码库，再使用“导入加密文件”合并数据。"
+        } catch PwdlockArchiveError.authenticationFailed {
+            operationSummary = nil
+            errorMessage = "文件无法解密。请确认输入的是导出该文件时设置的导出密码，而不是原密码库主密码。"
+        } catch PwdlockArchiveError.invalidArchive {
+            operationSummary = nil
+            errorMessage = "该文件不是有效的 Pwdlock 加密文件，或文件内容已损坏。"
         } catch {
             operationSummary = nil
-            errorMessage = "导出密码不正确、文件已损坏，或该文件不是有效的 Pwdlock 加密文件。"
+            errorMessage = "无法导入加密文件。"
         }
     }
 
@@ -666,6 +675,17 @@ final class VaultAppState: ObservableObject {
 
     private static func defaultVaultDirectory() -> URL {
         let supportDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return supportDirectory.appendingPathComponent("Pwdlock", isDirectory: true)
+        let rootDirectory = supportDirectory.appendingPathComponent("Pwdlock", isDirectory: true)
+        let legacyMetadata = rootDirectory.appendingPathComponent("vault.meta", isDirectory: false)
+        let separateLocalVault = rootDirectory.appendingPathComponent("LocalVault", isDirectory: true)
+
+        // Keep existing installations readable. New local vaults use a dedicated
+        // directory so the online SQLCipher cache cannot make first-run import
+        // appear to have an existing local vault.
+        if FileManager.default.fileExists(atPath: legacyMetadata.path),
+           !FileManager.default.fileExists(atPath: separateLocalVault.path) {
+            return rootDirectory
+        }
+        return separateLocalVault
     }
 }
