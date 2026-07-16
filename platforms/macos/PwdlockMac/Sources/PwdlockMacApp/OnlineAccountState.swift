@@ -83,8 +83,16 @@ final class OnlineAccountState: ObservableObject {
                 let api = OnlineAPIClient(baseURL: serviceURL)
                 let session = try await (register ? api.register(loginName: account, password: password) : api.login(loginName: account, password: password))
                 try saveToken(session.accessToken); password = ""; isSignedIn = true
-                onlineVaults = try await api.listVaults(accessToken: session.accessToken)
-                onlineVaultCreated = !onlineVaults.isEmpty
+                do {
+                    onlineVaults = try await api.listVaults(accessToken: session.accessToken)
+                    onlineVaultCreated = !onlineVaults.isEmpty
+                } catch {
+                    // Authentication succeeded. Do not turn an independent vault-list
+                    // failure into a misleading "wrong password" login failure.
+                    onlineVaults = []
+                    onlineVaultCreated = false
+                    errorMessage = "账号已登录，但暂时无法读取在线密码库列表。"
+                }
             } catch { errorMessage = register ? "无法创建在线账号。" : "账号或密码错误，或无法连接服务。" }
             isWorking = false
         }
