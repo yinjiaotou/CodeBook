@@ -173,7 +173,7 @@ final class VaultAppState: ObservableObject {
             recordActivity()
         } catch {
             operationSummary = nil
-            errorMessage = "无法导入加密文件。"
+            errorMessage = "导出密码不正确、文件已损坏，或该文件不是有效的 Pwdlock 加密文件。"
         }
     }
 

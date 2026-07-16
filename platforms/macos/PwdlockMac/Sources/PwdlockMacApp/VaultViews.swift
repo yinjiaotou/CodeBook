@@ -567,6 +567,7 @@ private struct ExistingVaultImportView: View {
     @ObservedObject var state: VaultAppState
     @State private var archiveURL: URL?
     @State private var exportPassword = ""
+    @State private var feedback: String?
 
     var body: some View {
         Form {
@@ -580,17 +581,24 @@ private struct ExistingVaultImportView: View {
             }
             Section("导出密码") {
                 SecureField("导出密码", text: $exportPassword)
-                    .onChange(of: exportPassword) { _, _ in state.recordActivity() }
+                    .onChange(of: exportPassword) { _, _ in
+                        feedback = nil
+                        state.recordActivity()
+                    }
                 Label("导入不会静默覆盖本地记录；不同内容将进入冲突中心。", systemImage: "lock.shield")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+            if let feedback {
+                Label(feedback, systemImage: "exclamationmark.triangle")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
             }
             HStack {
                 Spacer()
                 Button("取消") { dismiss() }
                 Button("导入加密文件", action: importArchive)
                     .buttonStyle(.borderedProminent)
-                    .disabled(archiveURL == nil || exportPassword.isEmpty)
             }
         }
         .padding()
@@ -607,12 +615,25 @@ private struct ExistingVaultImportView: View {
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK {
             archiveURL = panel.url
+            feedback = nil
         }
     }
 
     private func importArchive() {
-        guard let archiveURL else { return }
+        guard let archiveURL else {
+            feedback = "请先选择要导入的 .pwdlock 加密文件。"
+            return
+        }
+        guard !exportPassword.isEmpty else {
+            feedback = "请输入该加密文件的导出密码。"
+            return
+        }
         state.importIntoExistingVault(at: archiveURL, exportPassword: exportPassword)
+        if let error = state.errorMessage {
+            feedback = error
+            state.dismissError()
+            return
+        }
         exportPassword = ""
         if !state.isExistingVaultImportPresented { dismiss() }
     }
@@ -825,6 +846,7 @@ private struct ImportArchiveView: View {
     @State private var exportPasswordConfirmation = ""
     @State private var newMasterPassword = ""
     @State private var newMasterPasswordConfirmation = ""
+    @State private var feedback: String?
 
     var body: some View {
         Form {
@@ -837,12 +859,24 @@ private struct ImportArchiveView: View {
                 }
             }
             Section("导出密码") {
-                SecureField("导出密码", text: $exportPassword).onChange(of: exportPassword) { _, _ in state.recordActivity() }
-                SecureField("确认导出密码", text: $exportPasswordConfirmation).onChange(of: exportPasswordConfirmation) { _, _ in state.recordActivity() }
+                SecureField("导出密码", text: $exportPassword).onChange(of: exportPassword) { _, _ in
+                    feedback = nil
+                    state.recordActivity()
+                }
+                SecureField("确认导出密码", text: $exportPasswordConfirmation).onChange(of: exportPasswordConfirmation) { _, _ in
+                    feedback = nil
+                    state.recordActivity()
+                }
             }
             Section("新的本地主密码") {
-                SecureField("新的本地主密码", text: $newMasterPassword).onChange(of: newMasterPassword) { _, _ in state.recordActivity() }
-                SecureField("确认新的本地主密码", text: $newMasterPasswordConfirmation).onChange(of: newMasterPasswordConfirmation) { _, _ in state.recordActivity() }
+                SecureField("新的本地主密码", text: $newMasterPassword).onChange(of: newMasterPassword) { _, _ in
+                    feedback = nil
+                    state.recordActivity()
+                }
+                SecureField("确认新的本地主密码", text: $newMasterPasswordConfirmation).onChange(of: newMasterPasswordConfirmation) { _, _ in
+                    feedback = nil
+                    state.recordActivity()
+                }
                 Text("至少使用 12 个字符。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -850,24 +884,20 @@ private struct ImportArchiveView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+            if let feedback {
+                Label(feedback, systemImage: "exclamationmark.triangle")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
             HStack {
                 Spacer()
                 Button("取消") { dismiss() }
                 Button("导入", action: importArchive)
                     .buttonStyle(.borderedProminent)
-                    .disabled(!canImport)
             }
         }
         .padding()
         .frame(width: 460)
-    }
-
-    private var canImport: Bool {
-        archiveURL != nil
-            && !exportPassword.isEmpty
-            && exportPassword == exportPasswordConfirmation
-            && newMasterPassword == newMasterPasswordConfirmation
-            && MasterPasswordPolicy.isValid(newMasterPassword)
     }
 
     @MainActor
@@ -880,11 +910,35 @@ private struct ImportArchiveView: View {
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK {
             archiveURL = panel.url
+            feedback = nil
         }
     }
 
     private func importArchive() {
-        guard let archiveURL else { return }
+        guard let archiveURL else {
+            feedback = "请先选择要导入的 .pwdlock 加密文件。"
+            return
+        }
+        guard !exportPassword.isEmpty, !exportPasswordConfirmation.isEmpty else {
+            feedback = "请输入并确认加密文件的导出密码。"
+            return
+        }
+        guard exportPassword == exportPasswordConfirmation else {
+            feedback = "两次输入的导出密码不一致。"
+            return
+        }
+        guard !newMasterPassword.isEmpty, !newMasterPasswordConfirmation.isEmpty else {
+            feedback = "请输入并确认新的本地主密码。"
+            return
+        }
+        guard newMasterPassword == newMasterPasswordConfirmation else {
+            feedback = "两次输入的本地主密码不一致。"
+            return
+        }
+        guard MasterPasswordPolicy.isValid(newMasterPassword) else {
+            feedback = "新的本地主密码至少需要 12 个字符。"
+            return
+        }
         state.importArchive(
             at: archiveURL,
             exportPassword: exportPassword,
@@ -892,6 +946,11 @@ private struct ImportArchiveView: View {
             newMasterPassword: newMasterPassword,
             newMasterPasswordConfirmation: newMasterPasswordConfirmation
         )
+        if let error = state.errorMessage {
+            feedback = error
+            state.dismissError()
+            return
+        }
         exportPassword = ""
         exportPasswordConfirmation = ""
         newMasterPassword = ""
