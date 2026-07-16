@@ -6,13 +6,15 @@ struct PwdlockMacApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @NSApplicationDelegateAdaptor(PwdlockAppDelegate.self) private var appDelegate
     @StateObject private var state = VaultAppState()
+    @StateObject private var onlineState = OnlineAccountState()
 
     var body: some Scene {
         WindowGroup {
-            PasswordModeRootView(localState: state)
+            PasswordModeRootView(localState: state, onlineState: onlineState)
                 .onAppear {
                     appDelegate.onDidResignActive = { [weak state] in
                         state?.applicationDidResignActive()
+                        onlineState.lockOnlineVault()
                     }
                 }
                 .onChange(of: scenePhase) { _, phase in
@@ -35,6 +37,7 @@ enum PasswordStorageMode: String {
 /// know about account sessions, while the online state never opens local files.
 private struct PasswordModeRootView: View {
     @ObservedObject var localState: VaultAppState
+    @ObservedObject var onlineState: OnlineAccountState
     @AppStorage("passwordStorageMode") private var persistedMode = ""
 
     private var selectedMode: PasswordStorageMode? {
@@ -47,7 +50,7 @@ private struct PasswordModeRootView: View {
             case .local:
                 VaultRootView(state: localState)
             case .online:
-                OnlineVaultRootView(switchToMode: switchToMode)
+                OnlineVaultRootView(switchToMode: switchToMode, account: onlineState)
             case nil:
                 PasswordModeSelectionView(selectMode: switchToMode)
             }

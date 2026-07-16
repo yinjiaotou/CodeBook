@@ -11,7 +11,24 @@ public struct OnlineSession: Sendable, Equatable {
     public init(accessToken: String) { self.accessToken = accessToken }
 }
 
-public struct OnlineDevice: Sendable, Equatable, Decodable { public let id: UUID; public let publicSigningKey: String }
+public struct OnlineDevice: Sendable, Equatable, Decodable {
+    public let id: UUID
+    /// Device creation responses only need to return the identifier. Device list
+    /// responses include this key and are the only responses used for verification.
+    public let publicSigningKey: String
+
+    public init(id: UUID, publicSigningKey: String = "") {
+        self.id = id
+        self.publicSigningKey = publicSigningKey
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, publicSigningKey }
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        publicSigningKey = try container.decodeIfPresent(String.self, forKey: .publicSigningKey) ?? ""
+    }
+}
 public struct OnlineVault: Sendable, Equatable, Decodable { public let id: UUID; public let encryptedKeyEnvelope: String }
 public struct OnlineRemoteChange: Sendable, Equatable, Decodable { public let sequence: String; public let changeId: String; public let deviceId: UUID; public let ciphertext: String; public let signature: String }
 

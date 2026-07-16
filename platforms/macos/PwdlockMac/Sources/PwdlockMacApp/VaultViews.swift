@@ -66,7 +66,7 @@ private struct ModeCard: View {
 
 struct OnlineVaultRootView: View {
     let switchToMode: (PasswordStorageMode) -> Void
-    @StateObject private var account = OnlineAccountState()
+    @ObservedObject var account: OnlineAccountState
     @State private var vaultPassword = ""
     @State private var vaultPasswordConfirmation = ""
     @State private var unlockPassword = ""
@@ -79,8 +79,8 @@ struct OnlineVaultRootView: View {
     }
 
     var body: some View {
-        if account.isOnlineVaultUnlocked {
-            OnlineVaultLibraryView(lock: account.lockOnlineVault, switchToLocal: { switchToMode(.local) })
+        if account.isOnlineVaultUnlocked, let library = account.onlineLibrary {
+            OnlineVaultLibraryView(state: library, lock: account.lockOnlineVault, switchToLocal: { switchToMode(.local) })
         } else {
         VStack(spacing: 18) {
             HStack {
@@ -170,24 +170,197 @@ struct OnlineVaultRootView: View {
 }
 
 private struct OnlineVaultLibraryView: View {
+    @ObservedObject var state: OnlineVaultLibraryState
     let lock: () -> Void
     let switchToLocal: () -> Void
+    @State private var selectedID: UUID?
+    @State private var showingNewItem = false
+    @State private var showingDeleteConfirmation = false
 
     var body: some View {
-        VStack(spacing: 18) {
-            HStack {
-                Text("在线密码库").font(.title2.weight(.semibold))
-                Spacer()
-                Button("锁定", systemImage: "lock") { lock() }
-                Menu { Button("切换到本地模式", action: switchToLocal) } label: {
-                    Label("模式", systemImage: "arrow.triangle.2.circlepath")
+        NavigationSplitView {
+            List(selection: $selectedID) {
+                Section("搜索") {
+                    TextField("搜索标题、用户名、网站、分类或备注", text: $state.searchText)
+                }
+                Section("登录信息") {
+                    ForEach(state.items, id: \.id) { item in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.title)
+                            if !item.username.isEmpty {
+                                Text(item.username).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .tag(item.id)
+                    }
                 }
             }
-            .frame(maxWidth: .infinity)
-            ContentUnavailableView("在线密码库已解锁", systemImage: "lock.open", description: Text("同步完成后，登录条目将在这里显示。"))
         }
-        .frame(minWidth: 760, minHeight: 520)
-        .padding(28)
+        detail: {
+            Group {
+                if let item = state.selectedItem {
+                    OnlineLoginDetailView(
+                        item: item,
+                        copyPassword: { state.copyPassword(item) },
+                        edit: { showingNewItem = false },
+                        delete: { showingDeleteConfirmation = true },
+                        state: state
+                    )
+                } else if state.items.isEmpty {
+                    ContentUnavailableView(
+                        "尚无登录信息",
+                        systemImage: "key",
+                        description: Text("点击右上角“新建”添加第一条加密登录信息。")
+                    )
+                } else {
+                    ContentUnavailableView("选择一条登录信息", systemImage: "key")
+                }
+            }
+            .navigationTitle("在线密码库")
+            .toolbar { onlineToolbar }
+        }
+        .frame(minWidth: 820, maxWidth: .infinity, minHeight: 560, maxHeight: .infinity, alignment: .topLeading)
+        .onChange(of: selectedID) { _, id in state.selectItem(id: id) }
+        .onChange(of: state.items.map(\.id)) { _, ids in
+            if let selectedID, !ids.contains(selectedID) { self.selectedID = nil }
+        }
+        .sheet(isPresented: $showingNewItem) { OnlineLoginItemEditor(state: state, item: nil) }
+        .confirmationDialog("删除这条登录信息？", isPresented: $showingDeleteConfirmation, titleVisibility: .visible) {
+            Button("删除", role: .destructive) { state.deleteSelectedItem() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("删除操作会加密同步至在线密码库。")
+        }
+        .alert("在线密码库", isPresented: errorIsPresented) {
+            Button("确定", role: .cancel) { state.dismissError() }
+        } message: {
+            Text(state.errorMessage ?? "")
+        }
+    }
+
+    private var errorIsPresented: Binding<Bool> {
+        Binding(get: { state.errorMessage != nil }, set: { if !$0 { state.dismissError() } })
+    }
+
+    @ToolbarContentBuilder
+    private var onlineToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button {
+                state.synchronize()
+            } label: {
+                Label(state.isWorking ? "同步中" : "同步", systemImage: "arrow.triangle.2.circlepath")
+            }
+            .disabled(!state.isDeviceReady || state.isWorking)
+            Button {
+                showingNewItem = true
+            } label: {
+                Label("新建", systemImage: "plus")
+            }
+            .disabled(!state.isDeviceReady || state.isWorking)
+            Button("锁定", systemImage: "lock", action: lock)
+            Menu {
+                Button("切换到本地模式", action: switchToLocal)
+            } label: {
+                Label("模式", systemImage: "arrow.triangle.2.circlepath")
+            }
+        }
+        ToolbarItem(placement: .status) {
+            if state.isWorking {
+                ProgressView().controlSize(.small)
+            } else if let status = state.statusMessage {
+                Text(status).font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct OnlineLoginDetailView: View {
+    let item: LoginItem
+    let copyPassword: () -> Void
+    let edit: () -> Void
+    let delete: () -> Void
+    @ObservedObject var state: OnlineVaultLibraryState
+    @State private var showingPassword = false
+    @State private var showingEditor = false
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("用户名", value: item.username)
+                LabeledContent("密码") {
+                    HStack {
+                        Text(showingPassword ? item.password : String(repeating: "•", count: max(item.password.count, 8)))
+                        Button(showingPassword ? "隐藏" : "显示") { showingPassword.toggle() }
+                        Button("复制", action: copyPassword)
+                    }
+                }
+                LabeledContent("网站", value: item.url)
+                LabeledContent("分类", value: item.category)
+                if !item.note.isEmpty { LabeledContent("备注", value: item.note) }
+            }
+        }
+        .navigationTitle(item.title)
+        .toolbar {
+            ToolbarItemGroup {
+                Button("编辑") { showingEditor = true }
+                    .disabled(state.isWorking)
+                Button("删除", role: .destructive, action: delete)
+                    .disabled(state.isWorking)
+            }
+        }
+        .sheet(isPresented: $showingEditor) { OnlineLoginItemEditor(state: state, item: item) }
+    }
+}
+
+private struct OnlineLoginItemEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var state: OnlineVaultLibraryState
+    let item: LoginItem?
+    @State private var title: String
+    @State private var username: String
+    @State private var password: String
+    @State private var url: String
+    @State private var category: String
+    @State private var note: String
+
+    init(state: OnlineVaultLibraryState, item: LoginItem?) {
+        self.state = state
+        self.item = item
+        _title = State(initialValue: item?.title ?? "")
+        _username = State(initialValue: item?.username ?? "")
+        _password = State(initialValue: item?.password ?? "")
+        _url = State(initialValue: item?.url ?? "")
+        _category = State(initialValue: item?.category ?? "")
+        _note = State(initialValue: item?.note ?? "")
+    }
+
+    var body: some View {
+        Form {
+            TextField("标题", text: $title)
+            TextField("用户名", text: $username)
+            SecureField("密码", text: $password)
+            TextField("网站", text: $url)
+            TextField("分类", text: $category)
+            TextField("备注", text: $note)
+            Text("条目会先在本机加密，再以密文形式同步到服务端。")
+                .font(.footnote).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }
+                Button(item == nil ? "新建并同步" : "保存并同步") {
+                    if item == nil {
+                        state.addItem(title: title, username: username, password: password, url: url, category: category, note: note)
+                    } else {
+                        state.editSelectedItem(title: title, username: username, password: password, url: url, category: category, note: note)
+                    }
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || state.isWorking)
+            }
+        }
+        .padding()
+        .frame(width: 440)
     }
 }
 

@@ -13,26 +13,33 @@ final class OnlineAccountState: ObservableObject {
     @Published private(set) var onlineVaults: [OnlineVault] = []
     @Published private(set) var isOnlineVaultUnlocked = false
     @Published private(set) var isSignedIn = false
+    @Published private(set) var onlineLibrary: OnlineVaultLibraryState?
     private let serviceURL = URL(string: "http://127.0.0.1:3000/v1")!
     private static let service = "com.pwdlock.mac.online-access-token"
 
     func login() { authenticate(register: false) }
     func register() { authenticate(register: true) }
-    func signOut() { deleteToken(); password = ""; isSignedIn = false }
-    func lockOnlineVault() { isOnlineVaultUnlocked = false }
+    func signOut() { lockOnlineVault(); deleteToken(); password = ""; isSignedIn = false }
+    func lockOnlineVault() {
+        onlineLibrary?.close()
+        onlineLibrary = nil
+        isOnlineVaultUnlocked = false
+    }
     func unlockOnlineVault(masterPassword: String) {
-        guard let vault = onlineVaults.first, !isWorking else { return }
+        guard let vault = onlineVaults.first, let token = accessToken(), !isWorking else {
+            errorMessage = "登录状态已失效。"
+            return
+        }
         isWorking = true; errorMessage = nil
         do {
-            let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("Pwdlock/OnlineCache", isDirectory: true)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let database = try OnlineVaultAccess.openCache(
-                at: directory.appendingPathComponent("\(vault.id.uuidString.lowercased()).sqlite"),
-                encryptedKeyEnvelope: vault.encryptedKeyEnvelope,
-                masterPassword: masterPassword
+            let library = try OnlineVaultLibraryState.open(
+                vault: vault,
+                masterPassword: masterPassword,
+                accountID: loginName.trimmingCharacters(in: .whitespacesAndNewlines),
+                accessToken: token,
+                serviceURL: serviceURL
             )
-            database.close()
+            onlineLibrary = library
             isOnlineVaultUnlocked = true
         } catch { errorMessage = "无法解锁在线密码库。" }
         isWorking = false
