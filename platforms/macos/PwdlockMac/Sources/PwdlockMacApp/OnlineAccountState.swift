@@ -67,7 +67,15 @@ final class OnlineAccountState: ObservableObject {
 
     private func authenticate(register: Bool) {
         let account = loginName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !account.isEmpty, !password.isEmpty, !isWorking else { return }
+        guard !account.isEmpty, !password.isEmpty else {
+            errorMessage = "请输入账号和账户密码。"
+            return
+        }
+        guard !register || password.count >= 12 else {
+            errorMessage = "账户密码至少需要 12 个字符。"
+            return
+        }
+        guard !isWorking else { return }
         isWorking = true; errorMessage = nil
         Task {
             do {

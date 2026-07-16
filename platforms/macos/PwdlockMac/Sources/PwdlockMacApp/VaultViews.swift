@@ -105,7 +105,10 @@ struct OnlineVaultRootView: View {
                 .disabled(account.loginName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || account.password.isEmpty || account.isWorking)
             Button("创建在线账号") { account.register() }
                 .buttonStyle(.borderless)
-                .disabled(account.isWorking)
+                .disabled(account.loginName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || account.password.count < 12 || account.isWorking)
+            Text("创建账号时，账户密码至少需要 12 个字符。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
             if account.isWorking { ProgressView().controlSize(.small) }
             if account.isSignedIn && !account.onlineVaultCreated {
                 Divider().padding(.vertical, 6)
