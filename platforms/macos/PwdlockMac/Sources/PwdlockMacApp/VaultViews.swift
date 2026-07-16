@@ -70,6 +70,13 @@ struct OnlineVaultRootView: View {
     @State private var vaultPassword = ""
     @State private var vaultPasswordConfirmation = ""
     @State private var unlockPassword = ""
+    @State private var accountAction: AccountAction = .login
+
+    private enum AccountAction: String, CaseIterable, Identifiable {
+        case login = "登录"
+        case register = "注册"
+        var id: String { rawValue }
+    }
 
     var body: some View {
         VStack(spacing: 18) {
@@ -88,28 +95,31 @@ struct OnlineVaultRootView: View {
             Image(systemName: "lock.icloud")
                 .font(.system(size: 42, weight: .light))
                 .padding(.top, 10)
-            Text("登录以访问在线密码库")
+            Text(accountAction == .login ? "登录以访问在线密码库" : "创建在线账号")
                 .font(.headline)
             Text("密码条目始终在本机加密和解密；服务端只保存密文。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 320)
+            Picker("操作", selection: $accountAction) {
+                ForEach(AccountAction.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
             TextField("账号", text: $account.loginName)
                 .textContentType(.username)
             SecureField("账户密码", text: $account.password)
                 .textContentType(.password)
             if let errorMessage = account.errorMessage { Text(errorMessage).font(.footnote).foregroundStyle(.red) }
-            Button("登录在线密码库") { account.login() }
+            Button(accountAction == .login ? "登录在线密码库" : "创建在线账号") {
+                if accountAction == .login { account.login() } else { account.register() }
+            }
                 .buttonStyle(.borderedProminent)
-                .disabled(account.loginName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || account.password.isEmpty || account.isWorking)
-            Button("创建在线账号") { account.register() }
-                .buttonStyle(.borderless)
-                .disabled(account.loginName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || account.password.count < 12 || account.isWorking)
-            Text("创建账号时，账户密码至少需要 12 个字符。")
+                .disabled(account.loginName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (accountAction == .register ? account.password.count < 12 : account.password.isEmpty) || account.isWorking)
+            Text(accountAction == .register ? "创建账号时，账户密码至少需要 12 个字符。" : "使用已创建的在线账号登录。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-            if account.isWorking { ProgressView().controlSize(.small) }
+            if account.isWorking { ProgressView(accountAction == .login ? "正在登录…" : "正在创建账号…").controlSize(.small) }
             if account.isSignedIn && !account.onlineVaultCreated {
                 Divider().padding(.vertical, 6)
                 Text("创建在线密码库").font(.headline)
