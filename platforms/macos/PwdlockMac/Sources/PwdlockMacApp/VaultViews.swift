@@ -71,6 +71,7 @@ struct OnlineVaultRootView: View {
     @State private var vaultPasswordConfirmation = ""
     @State private var unlockPassword = ""
     @State private var accountAction: AccountAction = .login
+    @State private var showingSignOutConfirmation = false
 
     private enum AccountAction: String, CaseIterable, Identifiable {
         case login = "登录"
@@ -96,7 +97,9 @@ struct OnlineVaultRootView: View {
                     Button("切换到本地模式") { switchToMode(.local) }
                     if account.isSignedIn {
                         Divider()
-                        Button("退出登录", role: .destructive) { account.signOut() }
+                        Button("退出登录", role: .destructive) {
+                            showingSignOutConfirmation = true
+                        }
                     }
                 } label: {
                     Label("模式", systemImage: "arrow.triangle.2.circlepath")
@@ -172,6 +175,12 @@ struct OnlineVaultRootView: View {
         }
         .frame(width: 360)
         .padding(36)
+        .confirmationDialog("退出在线账号？", isPresented: $showingSignOutConfirmation, titleVisibility: .visible) {
+            Button("退出登录", role: .destructive) { account.signOut() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("退出后将锁定在线密码库，并清除这台 Mac 上的登录状态。")
+        }
         }
     }
 
@@ -190,6 +199,7 @@ private struct OnlineVaultLibraryView: View {
     @State private var selectedID: UUID?
     @State private var showingNewItem = false
     @State private var showingDeleteConfirmation = false
+    @State private var showingSignOutConfirmation = false
 
     var body: some View {
         NavigationSplitView {
@@ -250,6 +260,12 @@ private struct OnlineVaultLibraryView: View {
         } message: {
             Text(state.errorMessage ?? "")
         }
+        .confirmationDialog("退出在线账号？", isPresented: $showingSignOutConfirmation, titleVisibility: .visible) {
+            Button("退出登录", role: .destructive, action: signOut)
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("退出后将锁定在线密码库，并清除这台 Mac 上的登录状态。")
+        }
     }
 
     private var errorIsPresented: Binding<Bool> {
@@ -272,7 +288,9 @@ private struct OnlineVaultLibraryView: View {
             }
             .disabled(!state.isDeviceReady || state.isWorking)
             Button("锁定", systemImage: "lock", action: lock)
-            Button(role: .destructive, action: signOut) {
+            Button(role: .destructive) {
+                showingSignOutConfirmation = true
+            } label: {
                 Label("退出登录", systemImage: "rectangle.portrait.and.arrow.right")
             }
             Menu {
