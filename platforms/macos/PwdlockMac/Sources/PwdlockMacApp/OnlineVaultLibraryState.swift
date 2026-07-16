@@ -151,7 +151,10 @@ final class OnlineVaultLibraryState: ObservableObject {
                 ).id
             }
             isDeviceReady = true
-            statusMessage = "此设备已准备就绪。"
+            statusMessage = "正在同步在线密码库…"
+            // Entering an unlocked online vault must refresh the encrypted cache
+            // once, rather than relying on the user to discover the sync button.
+            await downloadChanges()
         } catch {
             errorMessage = "无法准备同步设备，请检查网络后重试。"
         }
