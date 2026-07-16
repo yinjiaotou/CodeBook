@@ -95,13 +95,14 @@ struct OnlineVaultRootView: View {
             Image(systemName: "lock.icloud")
                 .font(.system(size: 42, weight: .light))
                 .padding(.top, 10)
-            Text(accountAction == .login ? "登录以访问在线密码库" : "创建在线账号")
+            Text(account.isSignedIn ? "在线账号已登录" : (accountAction == .login ? "登录以访问在线密码库" : "创建在线账号"))
                 .font(.headline)
             Text("密码条目始终在本机加密和解密；服务端只保存密文。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 320)
+            if !account.isSignedIn {
             Picker("操作", selection: $accountAction) {
                 ForEach(AccountAction.allCases) { Text($0.rawValue).tag($0) }
             }
@@ -120,6 +121,12 @@ struct OnlineVaultRootView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             if account.isWorking { ProgressView(accountAction == .login ? "正在登录…" : "正在创建账号…").controlSize(.small) }
+            } else {
+                Label("已登录账号：\(account.loginName)", systemImage: "checkmark.circle")
+                    .foregroundStyle(.green)
+                Text("请继续创建新的在线密码库，或解锁已有在线密码库。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
             if account.isSignedIn && !account.onlineVaultCreated {
                 Divider().padding(.vertical, 6)
                 Text("创建在线密码库").font(.headline)
