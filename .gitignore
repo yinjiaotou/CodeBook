@@ -2,9 +2,33 @@
 logs
 *.log
 
+# Build artifacts
 .build
 dist
+**/build/
+*.apk
+*.aab
 
+# Android (local mode)
+platforms/android/.gradle/
+local.properties
+*.keystore
+*.jks
+captures/
+*.iml
+
+# macOS / Xcode
+platforms/macos/.build/
+DerivedData/
+*.xcodeproj
+*.xcworkspace
+*.swiftpm/
+*.p12
+*.provisionprofile
+
+# OS / editor
 .DS_Store
 .claude/*
+.workbuddy/
+.idea/
 .worktrees/
