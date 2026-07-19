@@ -90,26 +90,7 @@ public extension OnlineSyncEnvelope {
                 authenticating: associatedData(vaultID: vaultID, changeID: changeID)
             )
         } catch {
-            // Android builds released before the cross-platform envelope fix
-            // sent `ciphertext || tag` without the deterministic nonce prefix.
-            // Their nonce can be recovered from the authenticated change ID, so
-            // accept that legacy wire format only after normal decoding fails.
-            do {
-                let legacyNonce = Data(SHA256.hash(data: Data(changeID.uuidString.lowercased().utf8)).prefix(12))
-                guard combined.count >= 16 else { throw OnlineSyncEnvelopeError.authenticationFailed }
-                let legacyBox = try AES.GCM.SealedBox(
-                    nonce: AES.GCM.Nonce(data: legacyNonce),
-                    ciphertext: combined.dropLast(16),
-                    tag: combined.suffix(16)
-                )
-                return try AES.GCM.open(
-                    legacyBox,
-                    using: changeKey(from: vaultKey),
-                    authenticating: associatedData(vaultID: vaultID, changeID: changeID)
-                )
-            } catch {
-                throw OnlineSyncEnvelopeError.authenticationFailed
-            }
+            throw OnlineSyncEnvelopeError.authenticationFailed
         }
     }
 
