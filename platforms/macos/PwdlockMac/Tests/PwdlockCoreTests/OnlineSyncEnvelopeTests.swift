@@ -30,6 +30,38 @@ func onlineSyncEnvelopeRoundTrips() throws {
     ) == plaintext)
 }
 
+@Test("online sync envelope reads the legacy Android ciphertext format")
+func onlineSyncEnvelopeReadsLegacyAndroidFormat() throws {
+    let vaultKey = Data(repeating: 0x71, count: 32)
+    let signingKey = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 0x72, count: 32))
+    let plaintext = Data("legacy Android change".utf8)
+    let nonce = Data(SHA256.hash(data: Data(syncChangeID.uuidString.lowercased().utf8)).prefix(12))
+    let complete = try OnlineSyncEnvelope.seal(
+        plaintext: plaintext,
+        vaultID: syncVaultID,
+        changeID: syncChangeID,
+        vaultKey: vaultKey,
+        nonce: nonce,
+        signingKey: signingKey
+    )
+    let missingNonceCiphertext = Data(Data(base64Encoded: complete.ciphertext)!.dropFirst(12)).base64EncodedString()
+    let legacySignatureMessage = Data(
+        "pwdlock.sync.v1\u{0}\(syncVaultID.uuidString.lowercased())\u{0}\(syncChangeID.uuidString.lowercased())\u{0}\(missingNonceCiphertext)".utf8
+    )
+    let legacy = OnlineSyncEnvelope(
+        ciphertext: missingNonceCiphertext,
+        signature: try signingKey.signature(for: legacySignatureMessage).base64EncodedString(),
+        changeID: syncChangeID
+    )
+
+    #expect(try OnlineSyncEnvelope.open(
+        legacy,
+        vaultID: syncVaultID,
+        vaultKey: vaultKey,
+        publicSigningKey: signingKey.publicKey
+    ) == plaintext)
+}
+
 @Test("online sync envelope rejects a mismatched signature or associated IDs")
 func onlineSyncEnvelopeRejectsTampering() throws {
     let vaultKey = Data(repeating: 0x44, count: 32)
