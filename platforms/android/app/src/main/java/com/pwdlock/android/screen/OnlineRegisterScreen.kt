@@ -35,6 +35,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
 import android.widget.Toast
+import com.pwdlock.android.data.AppModePrefs
 import com.pwdlock.android.data.network.ApiException
 import com.pwdlock.android.data.vault.VaultSession
 import com.pwdlock.android.navigation.Screen
@@ -54,42 +55,18 @@ import com.pwdlock.android.ui.theme.SpaceSM
 import com.pwdlock.android.ui.theme.SpaceXL
 import kotlinx.coroutines.launch
 
-private fun strengthOf(pw: String): Int {
-    if (pw.isEmpty()) return 0
-    var score = 0
-    if (pw.length >= 12) score++
-    if (pw.length >= 16) score++
-    if (pw.any { it.isUpperCase() } && pw.any { it.isLowerCase() }) score++
-    if (pw.any { it.isDigit() }) score++
-    if (pw.any { !it.isLetterOrDigit() }) score++
-    return score.coerceIn(0, 4)
-}
-
-private fun strengthLabel(score: Int): String = when (score) {
-    0 -> "太弱"
-    1 -> "弱"
-    2 -> "一般"
-    3 -> "强"
-    else -> "很强"
-}
-
 @Composable
 fun OnlineRegisterScreen(navController: NavHostController) {
     var account by remember { mutableStateOf("") }
     var loginPassword by remember { mutableStateOf("") }
     var loginConfirm by remember { mutableStateOf("") }
-    var masterPassword by remember { mutableStateOf("") }
-    var masterConfirm by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     val accountOk = account.isNotBlank() && account.contains("@")
     val loginOk = loginPassword.length >= 12 && loginPassword == loginConfirm
-    val masterStrength = strengthOf(masterPassword)
-    val masterMeetsLength = masterPassword.length >= 12
-    val masterOk = masterMeetsLength && masterPassword == masterConfirm
-    val canRegister = accountOk && loginOk && masterOk
+    val canRegister = accountOk && loginOk
 
     Scaffold(
         topBar = {
@@ -106,7 +83,7 @@ fun OnlineRegisterScreen(navController: NavHostController) {
             verticalArrangement = Arrangement.spacedBy(SpaceLG),
         ) {
             Text(
-                text = "注册在线账户：登录凭证用于同步，主密码用于加密你的保险库，两者相互独立。",
+                text = "注册在线账户：登录凭证用于同步。注册成功后还需设置主密码（用于加密你的保险库），两者相互独立。",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -136,63 +113,6 @@ fun OnlineRegisterScreen(navController: NavHostController) {
                 )
             }
 
-            // 保险库主密码
-            PasswordField(
-                label = "主密码",
-                value = masterPassword,
-                onValueChange = { masterPassword = it },
-            )
-            PasswordField(
-                label = "确认主密码",
-                value = masterConfirm,
-                onValueChange = { masterConfirm = it },
-            )
-
-            Column(verticalArrangement = Arrangement.spacedBy(SpaceSM)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(SpaceSM)) {
-                    repeat(4) { i ->
-                        val active = i < masterStrength
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(6.dp)
-                                .clip(RoundedCornerShape(RadiusPill))
-                                .background(
-                                    if (active) {
-                                        when (masterStrength) {
-                                            1 -> PwdlockColors.Danger
-                                            2 -> PwdlockColors.Warning
-                                            3 -> PwdlockColors.Success
-                                            else -> PwdlockColors.Brand
-                                        }
-                                    } else {
-                                        MaterialTheme.colorScheme.surfaceVariant
-                                    },
-                                ),
-                        )
-                    }
-                }
-                Text(
-                    text = if (masterPassword.isEmpty()) "强度：${strengthLabel(0)}" else "强度：${strengthLabel(masterStrength)}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (masterPassword.isNotEmpty() && !masterMeetsLength) {
-                Text(
-                    text = "主密码至少需要 12 个字符。",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = PwdlockColors.Danger,
-                )
-            }
-            if (masterPassword.isNotEmpty() && masterConfirm.isNotEmpty() && masterPassword != masterConfirm) {
-                Text(
-                    text = "两次输入的主密码不一致。",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = PwdlockColors.Danger,
-                )
-            }
-
             AccentNote(
                 icon = Icons.Filled.Cloud,
                 tone = NoteTone.Info,
@@ -202,15 +122,21 @@ fun OnlineRegisterScreen(navController: NavHostController) {
 
             Spacer(modifier = Modifier.height(SpaceMD))
             PwdlockButton(
-                text = "注册并进入",
+                text = "注册",
                 enabled = canRegister && !loading,
                 onClick = {
                     scope.launch {
                         loading = true
                         try {
-                            VaultSession.registerOnline(context, account.trim(), loginPassword, masterPassword)
+                            VaultSession.registerOnline(context, account.trim(), loginPassword)
                             loading = false
-                            navController.navigate(Screen.VaultHome.route)
+                            AppModePrefs.setLastMode(context, "online")
+                            // 注册只建立登录态；是否已有保险库由主密码页判定：
+                            // 新账号无库 → 进入「创建主密码」流程，二次确认后真正建库。
+                            navController.navigate(Screen.OnlineMasterPassword.route) {
+                                popUpTo(Screen.OnlineLogin.route) { inclusive = true }
+                                launchSingleTop = true
+                            }
                         } catch (e: Exception) {
                             loading = false
                             val msg = if (e is ApiException.Conflict) {

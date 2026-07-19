@@ -3,7 +3,6 @@ package com.pwdlock.android.crypto.online
 import android.util.Base64
 import com.pwdlock.android.crypto.AesGcm
 import org.bouncycastle.crypto.digests.SHA256Digest
-import java.security.MessageDigest
 import org.bouncycastle.crypto.generators.HKDFBytesGenerator
 import org.bouncycastle.crypto.params.HKDFParameters
 import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
@@ -83,12 +82,15 @@ object OnlineSyncCrypto {
         signingSeed: ByteArray,
     ): OnlineSyncEnvelope {
         val changeKey = deriveChangeKey(vaultKey)
-        // nonce 由 changeId 派生（确定性），保证同一逻辑变更重发时密文/签名完全一致，
-        // 服务端据此判定为幂等（201 而非 409）。changeId 唯一 ⇒ nonce 唯一，不违反"同密钥下 nonce 不复用"。
-        val nonce = MessageDigest.getInstance("SHA-256").digest(changeId.toByteArray(Charsets.UTF_8)).copyOfRange(0, 12)
+        // 与 macOS `AES.GCM.Nonce()` 完全一致：每次封装使用随机 12 字节 nonce。
+        // nonce 已包含在密文组合格式（nonce(12) || ct || tag）内，接收端按相同字节解出，
+        // 因此「随机」不会影响跨端互解；仅保证同密钥下 nonce 不复用。
+        val nonce = ByteArray(12).also { random.nextBytes(it) }
         val aad = changeAad(vaultId, changeId)
-        val sealed = AesGcm.seal(plaintext, changeKey, nonce, aad) // nonce || ciphertext || tag
-        val ciphertext = sealed.toBase64()
+        val sealed = AesGcm.seal(plaintext, changeKey, nonce, aad) // ct || tag
+        // CryptoKit 组合格式：nonce(12) || ct || tag，与 macOS 完全一致，保证跨端可互解。
+        val combined = nonce + sealed
+        val ciphertext = combined.toBase64()
         val sig = sign(signingSeed, signatureMessage(vaultId, changeId, ciphertext)).toBase64()
         return OnlineSyncEnvelope(ciphertext, sig, changeId.lowercase())
     }
@@ -104,14 +106,17 @@ object OnlineSyncCrypto {
         devicePublicRaw: ByteArray,
     ): ByteArray {
         val changeKey = deriveChangeKey(vaultKey)
-        val ciphertextBytes = envelope.ciphertext.fromBase64()
+        val combined = envelope.ciphertext.fromBase64()
         val signatureBytes = envelope.signature.fromBase64()
         val msg = signatureMessage(vaultId, envelope.changeId, envelope.ciphertext)
         if (!verify(devicePublicRaw, msg, signatureBytes)) {
             throw OnlineCryptoException("invalid change signature")
         }
         val aad = changeAad(vaultId, envelope.changeId)
-        return AesGcm.open(ciphertextBytes, changeKey, ciphertextBytes.copyOfRange(0, 12), aad)
+        // CryptoKit 组合格式：nonce(12) || ct || tag；与 macOS 完全一致。
+        val nonce = combined.copyOfRange(0, 12)
+        val sealed = combined.copyOfRange(12, combined.size)
+        return AesGcm.open(sealed, changeKey, nonce, aad)
     }
 }
 

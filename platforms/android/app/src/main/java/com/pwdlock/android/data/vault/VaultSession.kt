@@ -1,7 +1,8 @@
 package com.pwdlock.android.data.vault
 
 import android.content.Context
-import com.pwdlock.android.crypto.AesGcm
+import android.util.Base64
+import android.util.Log
 import com.pwdlock.android.crypto.CryptoIO
 import com.pwdlock.android.crypto.PwdlockArchive
 import com.pwdlock.android.crypto.VaultBootstrap
@@ -10,47 +11,46 @@ import com.pwdlock.android.crypto.VaultMetadataCodec
 import com.pwdlock.android.data.model.LocalConflict
 import com.pwdlock.android.data.model.PwdlockPayload
 import com.pwdlock.android.data.model.PwdlockRecord
-import com.pwdlock.android.data.model.VaultItem
 import com.pwdlock.android.data.model.toVaultItem
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import android.os.Build
-import com.pwdlock.android.crypto.online.OnlineSyncCrypto
-import com.pwdlock.android.crypto.online.OnlineSyncEnvelope
-import com.pwdlock.android.crypto.online.fromBase64
-import com.pwdlock.android.crypto.online.toBase64
+import com.pwdlock.android.data.model.VaultItem
 import com.pwdlock.android.data.network.ApiClient
+import com.pwdlock.android.data.vault.OnlineSyncResult
 import com.pwdlock.android.data.network.ApiException
-import com.pwdlock.android.data.network.OnlineSyncEnvelopeWire
 import com.pwdlock.android.data.online.OnlineAccountStore
-import com.pwdlock.android.data.online.OnlineChangeJson
-import com.pwdlock.android.data.online.OnlineVaultCache
-import com.pwdlock.android.data.online.OnlineVaultChange
+import com.pwdlock.android.data.online.OnlineVaultBackend
+import java.text.Normalizer
+import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import java.nio.ByteBuffer
-import java.security.MessageDigest
-import java.text.Normalizer
-import java.util.UUID
+import kotlinx.coroutines.withContext
 
 /**
- * 本地模式会话（进程内单例）。
+ * 会话门面（进程内单例）。
  *
- * 持有内存中的 `vaultKey`、记录列表与待裁决冲突；通过文件化 [VaultStore] 持久化。
- * - 锁定时清空内存态，vaultKey 不留盘（仅 112 字节信封落盘）。
- * - UI 通过 [items] / [conflicts] / [unlocked]（[StateFlow]）观察变化并自动重组。
+ * 只负责「已解锁会话状态」的维护与向 UI 暴露观察流（[items] / [conflicts] / [unlocked]），
+ * 以及作为本地 / 在线两种模式的统一入口。**不内含任何 onlineMode 业务分支**：
+ * 记录的增删改、导入合并、冲突裁决、同步与补传，全部委托给当前激活的 [VaultBackend]。
+ *
+ * - 本地模式  → [LocalVaultBackend]（仅本机文件持久化）
+ * - 在线模式  → [OnlineVaultBackend]（API 通信 + 本地加密缓存 + 离线补传队列 + 远端同步）
+ *
+ * 记录模型（[PwdlockRecord]）与密码学原语为两模式共用；「传输层」业务由两个独立后端各自完成，
+ * 二者通过 [VaultBackend] 接口接入，互不依赖——本地与在线在代码结构上是清晰分离的两个模块。
  */
 object VaultSession {
+    private const val TAG = "VaultSession"
     private val _items = MutableStateFlow<List<VaultItem>>(emptyList())
     val items: StateFlow<List<VaultItem>> = _items.asStateFlow()
 
     private val _conflicts = MutableStateFlow<List<LocalConflict>>(emptyList())
     val conflicts: StateFlow<List<LocalConflict>> = _conflicts.asStateFlow()
 
-    /** 解锁状态（供自动锁定/导航层观察）。 */
+    /** 解锁状态（供自动锁定 / 导航层观察）。 */
     private val _unlocked = MutableStateFlow(false)
     val unlocked: StateFlow<Boolean> = _unlocked.asStateFlow()
 
@@ -66,32 +66,48 @@ object VaultSession {
         private set
 
     /**
-     * 导入流程进行中（停留在导入预览页）。为 true 时豁免自动锁定（切后台 / 前台闲置），
-     * 确保「确认导入」时内存中的 vaultKey 一定在线，避免导入被锁定中断而丢失。
-     * 离开导入预览页或锁定时由会话层重置。
+     * 导入流程进行中（停留在导入预览页）。为 true 时豁免自动锁定，确保「确认导入」时
+     * 内存中的 vaultKey 一定在线，避免导入被锁定中断而丢失。
      */
     var importFlowActive: Boolean = false
 
-    /**
-     * 待续做的导入负载（明文记录）。当「确认导入」时 vault 已被锁定，先把明文 payload 暂存，
-     * 解锁成功后由解锁页自动执行合并，避免导入流程因锁定而丢失。
-     */
+    /** 待合并的导入负载（明文）。锁定时由解锁页自动执行合并，避免导入因锁定丢失。 */
     var pendingMergePayload: PwdlockPayload? = null
 
-    // region 在线模式
-
-    /** 当前是否为在线保险库会话（跨锁定保留，决定解锁页走本地/在线）。 */
+    /**
+     * 是否为在线会话。**仅用于导航层决定锁定后的回落地**（在线回在线主密码页，本地回本地锁页）；
+     * 业务代码（upsert / delete / 等）不得据此分支，统一委托 [backend]。
+     */
     var onlineMode: Boolean = false
-    /** 服务端分配的本保险库 UUID（注意：非信封里的 16 字节 vaultID）。 */
-    private var onlineVaultId: String? = null
-    /** 由 vaultKey 派生的变更加密密钥。 */
-    var changeKey: ByteArray? = null
         private set
-    /** deviceId → 原始公钥(base64) 映射，用于验签拉取到的变更。 */
-    private var devicePubKeyMap: Map<String, String>? = null
 
-    private val onlineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    // endregion
+    /** 当前激活的存储后端；加锁时置空。 */
+    private var backend: VaultBackend? = null
+
+    /**
+     * 会话级协程作用域。UI 面向的（非 suspend）业务方法（upsert / delete / 导入合并 / 冲突裁决 / 创建）
+     * 把「落盘 + 上云」这类 suspend 调用统一丢到这个作用域里异步执行，避免阻塞 UI 线程；
+     * 内存态的更新（emitState）仍是同步的，保证 UI 即时刷新。
+     */
+    private val sessionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    // region 状态维护
+
+    internal fun emitState() {
+        // 数据卫生：若记录出现重复 id（例如历史同步异常或旧缓存损坏），去重后发射。
+        // 保留第一次出现，避免 LazyColumn key 重复崩溃。
+        val dedupedRecords = records.distinctBy { it.id }
+        if (dedupedRecords.size != records.size) {
+            Log.w(TAG, "records contained ${records.size - dedupedRecords.size} duplicate id(s); deduplicated before emitting")
+            records = dedupedRecords
+        }
+        _items.value = dedupedRecords.map { it.toVaultItem() }
+        _conflicts.value = conflictList
+        _unlocked.value = vaultKey != null
+    }
+
+    internal fun snapshotRecords(): List<PwdlockRecord> = records
+    internal fun snapshotConflicts(): List<LocalConflict> = conflictList
 
     fun isUnlocked(): Boolean = vaultKey != null
     fun hasVault(context: Context): Boolean = VaultStore(context).exists()
@@ -99,14 +115,11 @@ object VaultSession {
     fun setPendingImport(bytes: ByteArray) { pendingImportBytes = bytes }
     fun clearPendingImport() { pendingImportBytes = null }
 
-    private fun emit() {
-        _items.value = records.map { it.toVaultItem() }
-        _conflicts.value = conflictList
-        _unlocked.value = vaultKey != null
-    }
+    // endregion
 
-    // region 生命周期
+    // region 本地模式生命周期
 
+    /** 本地创建保险库。 */
     fun create(context: Context, masterPassword: String) {
         val created = VaultBootstrap.create(masterPassword)
         val dev = UUID.randomUUID()
@@ -117,10 +130,17 @@ object VaultSession {
         vaultKey = created.vaultKey
         records = emptyList()
         conflictList = emptyList()
-        store.writePayload(encryptPayload(emptyPayload(dev), created.vaultKey))
-        emit()
+        onlineMode = false
+        backend = LocalVaultBackend(context)
+        // 新建保险库会生成全新 vaultKey；清掉可能残留的旧指纹凭据，避免指纹封存的是旧 key 导致解锁失效。
+        BiometricUnlock.disable(context)
+        emitState()
+        sessionScope.launch {
+            backend?.persistState(context, records, conflictList)
+        }
     }
 
+    /** 本地主密码解锁。 */
     fun unlock(context: Context, masterPassword: String): Boolean = try {
         val store = VaultStore(context)
         val meta = VaultMetadataCodec.decode(store.readMeta())
@@ -131,10 +151,7 @@ object VaultSession {
         false
     }
 
-    /**
-     * 用已解出的 vaultKey 直接解锁（指纹解锁路径）。
-     * vaultKey 由 Keystore 密钥在指纹认证后解出，无需主密码。
-     */
+    /** 指纹解锁路径：用已解出的 vaultKey 直接解锁。 */
     fun unlockWithVaultKey(context: Context, key: ByteArray): Boolean = try {
         loadUnlocked(context, key)
         true
@@ -147,32 +164,37 @@ object VaultSession {
         val dev = store.readDeviceId() ?: UUID.randomUUID().toString().also { store.writeDeviceId(it) }
         deviceId = dev
         vaultKey = key
-        records = decryptPayload(store.readPayload(), key).records
+        records = VaultCipher.decryptPayload(store.readPayload(), key).records
         conflictList = if (store.hasConflicts()) {
-            try { ConflictJson.decode(String(decryptBytes(store.readConflicts(), key), Charsets.UTF_8)) }
-            catch (_: Exception) { emptyList() }
-        } else emptyList()
-        emit()
+            try {
+                ConflictJson.decode(String(VaultCipher.decryptBytes(store.readConflicts(), key), Charsets.UTF_8))
+            } catch (_: Exception) {
+                emptyList()
+            }
+        } else {
+            emptyList()
+        }
+        onlineMode = false
+        backend = LocalVaultBackend(context)
+        emitState()
     }
 
+    /** 清空内存态（保留 onlineMode 以决定锁定回落地）；后端引用一并置空。 */
     fun lock() {
         vaultKey = null
         records = emptyList()
         conflictList = emptyList()
         deviceId = null
         importFlowActive = false
-        // 在线态：保留 onlineMode（决定解锁页路由），清空内存密钥与同步上下文。
-        onlineVaultId = null
-        changeKey = null
-        devicePubKeyMap = null
-        emit()
+        backend = null
+        emitState()
     }
 
     // endregion
 
     fun getRecord(id: String): PwdlockRecord? = records.firstOrNull { it.id == id }
 
-    /** 新增或更新一条记录；返回记录 id。 */
+    /** 新增或更新一条记录；返回记录 id。落地与（在线）上传统一委托给 [backend]。 */
     fun upsert(context: Context, draft: VaultRecordDraft): String {
         val key = checkUnlocked()
         val now = System.currentTimeMillis()
@@ -200,7 +222,7 @@ object VaultSession {
                 note = norm(draft.note),
                 createdAtMs = now,
                 updatedAtMs = now,
-                revision = 1,
+                revision = 0,
                 deviceId = deviceId ?: UUID.randomUUID().toString(),
             )
         }
@@ -209,20 +231,23 @@ object VaultSession {
         } else {
             records + record
         }
-        persist(context, key)
-        emit()
-        if (onlineMode && onlineVaultId != null && vaultKey != null) pushChange(context, record, "upsert")
+        emitState()
+        sessionScope.launch {
+            backend?.persistState(context, records, conflictList)
+            backend?.pushRecords(context, listOf(record), "upsert")
+        }
         return record.id
     }
 
+    /** 删除一条记录。落地与（在线）上传统一委托给 [backend]。 */
     fun delete(context: Context, id: String) {
         val key = checkUnlocked()
         val removed = records.firstOrNull { it.id == id }
         records = records.filter { it.id != id }
-        persist(context, key)
-        emit()
-        if (removed != null && onlineMode && onlineVaultId != null && vaultKey != null) {
-            pushChange(context, removed, "delete")
+        emitState()
+        sessionScope.launch {
+            backend?.persistState(context, records, conflictList)
+            if (removed != null) backend?.pushRecords(context, listOf(removed), "delete")
         }
     }
 
@@ -238,11 +263,8 @@ object VaultSession {
         return PwdlockArchive.`import`(bytes, password)
     }
 
-    /**
-     * 干跑合并摘要（不改动数据），用于导入预览页展示真实数量。
-     * 参考 macOS `mergeImportedItems`：相同 id 且内容不同 → 冲突（不覆盖）。
-     */
-    fun previewSummary(payload: PwdlockPayload): MergeSummary {
+    /** 干跑合并摘要（不改动数据），用于导入预览页展示真实数量。 */
+    fun previewSummary(payload: PwdlockPayload, conflictFree: Boolean = false): MergeSummary {
         var added = 0
         var identical = 0
         var conflicts = 0
@@ -251,6 +273,8 @@ object VaultSession {
             when {
                 local == null -> added++
                 logicallyEquivalent(local, imported) -> identical++
+                // 无冲突模式（在线导入）：同 id 异内容视为「覆盖」，不计入冲突。
+                conflictFree -> added++
                 else -> conflicts++
             }
         }
@@ -258,16 +282,20 @@ object VaultSession {
     }
 
     /**
-     * 合并导入记录（参考 macOS）：
-     * - 本地无同 id → 新增
-     * - 内容逻辑等价 → 跳过
-     * - 同 id 内容不同 → 生成待裁决冲突（不静默覆盖），去重相同冲突
+     * 合并导入记录：
+     * - 本地无同 id → 新增；
+     * - 内容逻辑等价 → 跳过；
+     * - 同 id 内容不同 → 本地模式进入待裁决冲突中心，在线模式直接覆盖（[conflictFree] = true）。
+     *
+     * 在线模式下，新增 / 覆盖的记录都会作为变更推送回云端（由 [backend] 处理）；
+     * 因在线模式不存在「冲突」概念，[conflictFree] 由调用方（UI 层）按当前激活模式传入。
      */
-    fun mergeImport(context: Context, payload: PwdlockPayload): MergeSummary {
+    fun mergeImport(context: Context, payload: PwdlockPayload, conflictFree: Boolean = false): MergeSummary {
         val key = checkUnlocked()
         val now = System.currentTimeMillis()
         val mergedRecords = records.toMutableList()
         val mergedConflicts = conflictList.toMutableList()
+        val addedRecords = mutableListOf<PwdlockRecord>()
         var added = 0
         var identical = 0
         var conflicts = 0
@@ -276,6 +304,7 @@ object VaultSession {
             val idx = mergedRecords.indexOfFirst { it.id == imported.id }
             if (idx < 0) {
                 mergedRecords.add(imported)
+                addedRecords.add(imported)
                 added++
                 continue
             }
@@ -284,7 +313,14 @@ object VaultSession {
                 identical++
                 continue
             }
-            // 去重：同一记录、同样的本地/导入内容已有待裁决冲突则跳过
+            if (conflictFree) {
+                // 在线模式：直接覆盖本地版，不存在冲突中心。
+                mergedRecords[idx] = imported
+                addedRecords.add(imported)
+                added++
+                continue
+            }
+            // 去重：同一记录、同样的本地/导入内容已有待裁决冲突则跳过。
             val duplicate = mergedConflicts.any {
                 it.recordId == imported.id &&
                     logicallyEquivalent(it.local, local) &&
@@ -306,69 +342,99 @@ object VaultSession {
 
         records = mergedRecords
         conflictList = mergedConflicts
-        persist(context, key)
-        emit()
+        emitState()
+        sessionScope.launch {
+            backend?.persistState(context, records, conflictList)
+            backend?.pushRecords(context, addedRecords, "upsert")
+        }
         return MergeSummary(added, identical, conflicts)
     }
 
     // endregion
 
-    // region 冲突裁决（参考 macOS resolveKeepingLocal / resolveUsingImported）
+    // region 冲突裁决（导入冲突 & 在线同步冲突共用同一模型，裁决结果由 backend 决定走向）
 
-    /** 保留本地版：直接删除该冲突，本地记录不变。 */
+    /** 保留本地版：仅移除冲突，本地记录不变。在线模式下本地版会回传云端。 */
     fun resolveKeepLocal(context: Context, conflictId: String) {
         val key = checkUnlocked()
+        val conflict = conflictList.firstOrNull { it.id == conflictId } ?: return
         conflictList = conflictList.filter { it.id != conflictId }
-        persist(context, key)
-        emit()
+        emitState()
+        sessionScope.launch {
+            backend?.persistState(context, records, conflictList)
+            backend?.pushRecords(context, listOf(conflict.local), "upsert")
+        }
     }
 
-    /** 用导入版替换本地记录，然后删除该冲突。 */
+    /** 用导入版替换本地记录，然后移除冲突。在线模式下该版本会回传云端。 */
     fun resolveUseImported(context: Context, conflictId: String) {
         val key = checkUnlocked()
         val conflict = conflictList.firstOrNull { it.id == conflictId } ?: return
         records = records.map { if (it.id == conflict.recordId) conflict.imported else it }
         conflictList = conflictList.filter { it.id != conflictId }
-        persist(context, key)
-        emit()
+        emitState()
+        sessionScope.launch {
+            backend?.persistState(context, records, conflictList)
+            backend?.pushRecords(context, listOf(conflict.imported), "upsert")
+        }
     }
 
     // endregion
 
-    // region 在线模式：注册 / 登录 / 解锁 / 同步 / 推送
+    // region 远端变更合并（由 OnlineVaultBackend.sync 回调，纯记录模型操作）
 
     /**
-     * 注册在线账户并创建云端保险库：
-     * 注册账号 → 生成 Vault Key（主密码）→ 上传信封 → 登记本设备 Ed25519 密钥 → 初始化本地缓存。
-     * 完成后直接进入空保险库。
+     * 应用远端 upsert：在线模式服务端即真理——直接用远端记录覆盖本地同 id 记录。
+     * 同 id 不同内容也直接覆盖（last-write-wins，差异最终由待传队列回传云端收敛），
+     * 绝不进入冲突中心：在线模式的密码库数据全部来自线上数据库，不存在「冲突」概念。
+     *
+     * 注意：本函数仅由 [com.pwdlock.android.data.online.OnlineVaultBackend] 的同步流程调用，
+     * 本地模式走自己的合并语义，不存在此路径。
+     */
+    internal fun reconcileRemoteUpsert(record: PwdlockRecord) {
+        val idx = records.indexOfFirst { it.id == record.id }
+        records = if (idx < 0) {
+            records + record
+        } else {
+            records.toMutableList().apply { this[idx] = record }
+        }
+    }
+
+    internal fun reconcileRemoteDelete(recordId: String) {
+        records = records.filter { it.id != recordId }
+    }
+
+    // endregion
+
+    // region 在线模式入口（引导 + 建立后端；会话状态仍由门面持有）
+
+    /**
+     * 注册在线账户：注册账号 → 保存令牌 → 查询云端保险库列表。
+     * 注册成功 ≠ 已有保险库：新账号必然无库，由后续「创建主密码」流程（[OnlineMasterPasswordScreen]
+     * 的 createMode）真正建库。与 macOS 一致：注册只建立登录态，不创建保险库。
      */
     suspend fun registerOnline(
         context: Context,
         loginName: String,
         loginPassword: String,
-        masterPassword: String,
     ) {
         val api = ApiClient(OnlineAccountStore.baseUrl(context))
         val token = api.register(loginName, loginPassword)
         OnlineAccountStore.saveCredentials(context, token, loginName)
 
-        val created = VaultBootstrap.create(masterPassword)
-        vaultKey = created.vaultKey
-        val envB64 = VaultMetadataCodec.encode(created.metadata).toBase64()
-        val vault = api.createVault(envB64, token)
-        OnlineAccountStore.saveVault(context, vault.id, envB64)
-        enrollDevice(context, api, token)
-
-        onlineVaultId = vault.id
-        records = emptyList()
-        conflictList = emptyList()
-        val cache = OnlineVaultCache(context, vault.id)
-        cache.writePayload(
-            cache.encrypt(VaultJson.encodePayload(emptyPayload(UUID.randomUUID())).toByteArray(Charsets.UTF_8), vaultKey!!),
-        )
-        changeKey = OnlineSyncCrypto.deriveChangeKey(vaultKey!!)
-        onlineMode = true
-        emit()
+        // 查询云端保险库，记录是否存在（供主密码页判定 createMode / unlockMode）。
+        val vaults = try {
+            api.listVaults(token)
+        } catch (_: Exception) {
+            emptyList()
+        }
+        if (vaults.isNotEmpty()) {
+            val v = vaults[0]
+            OnlineAccountStore.saveVault(context, v.id, v.encryptedKeyEnvelope)
+        } else {
+            // 无库：清空 vaultId，主密码页进入「创建主密码」流程。
+            OnlineAccountStore.saveVault(context, "", "")
+        }
     }
 
     /**
@@ -391,218 +457,120 @@ object VaultSession {
     }
 
     /**
-     * 用主密码解锁在线保险库：解密 Vault Key →（若无设备则登记）→ 载入本地缓存 → 同步云端变更。
-     * 若登录后服务端无保险库（pendingCreate），则在此创建。
+     * 用主密码解锁在线保险库：解密 Vault Key →（若无设备则登记）→ 进入在线会话 →
+     * 全量从云端拉取（游标归零）解密后显示。在线模式数据一律以服务端为真理，本机不缓存记录副本。
+     * 若登录后服务端无保险库（vaultId 为空），则在此「创建」保险库（生成 vaultKey + 信封 + 登记设备）。
      */
-    suspend fun unlockOnline(context: Context, masterPassword: String) {
+    suspend fun unlockOnline(context: Context, masterPassword: String) = withContext(Dispatchers.IO) {
         val token = OnlineAccountStore.token(context) ?: throw IllegalStateException("未登录")
         val api = ApiClient(OnlineAccountStore.baseUrl(context))
         val vaultId = OnlineAccountStore.vaultId(context)
 
+        val online: OnlineVaultBackend
         if (vaultId.isBlank()) {
-            // 待创建分支：本端首次使用且服务端无保险库。
+            // 待创建分支：登录后服务端无保险库（即从未创建过主密码）。与 Mac 端一致：
+            // 此处即以该主密码「创建」在线保险库，创建成功后进入主界面（空库）。
             val created = VaultBootstrap.create(masterPassword)
             vaultKey = created.vaultKey
-            val envB64 = VaultMetadataCodec.encode(created.metadata).toBase64()
+            val envB64 = Base64.encodeToString(VaultMetadataCodec.encode(created.metadata), Base64.NO_WRAP)
             val vault = api.createVault(envB64, token)
             OnlineAccountStore.saveVault(context, vault.id, envB64)
-            enrollDevice(context, api, token)
-            onlineVaultId = vault.id
+            online = OnlineVaultBackend(context, vault.id, vaultKey!!)
+            // 必须登记本机设备：否则 signingSeed 为空，此后「新增/修改记录」会因 pushRecords 提前返回而永远推不上云端。
+            online.ensureDevice()
             records = emptyList()
             conflictList = emptyList()
         } else {
-            val meta = VaultMetadataCodec.decode(OnlineAccountStore.envelope(context).fromBase64())
+            val meta = VaultMetadataCodec.decode(Base64.decode(OnlineAccountStore.envelope(context), Base64.NO_WRAP))
             vaultKey = VaultKeyEnvelope.unwrap(meta, masterPassword)
-            onlineVaultId = vaultId
-            if (!OnlineAccountStore.hasDevice(context)) enrollDevice(context, api, token)
-            val cache = OnlineVaultCache(context, vaultId)
-            records = if (cache.exists()) {
-                decryptPayload(cache.readPayload(), vaultKey!!).records
-            } else {
-                emptyList()
-            }
-            conflictList = if (cache.hasConflicts()) {
-                try {
-                    ConflictJson.decode(String(cache.decrypt(cache.readConflicts(), vaultKey!!), Charsets.UTF_8))
-                } catch (_: Exception) {
-                    emptyList()
-                }
-            } else {
-                emptyList()
-            }
+            online = OnlineVaultBackend(context, vaultId, vaultKey!!)
+            if (!OnlineAccountStore.hasDevice(context)) online.ensureDevice()
+            // 在线模式数据一律以服务端为真理：进入即全量从云端拉取，不在本机缓存读取。
+            records = emptyList()
+            conflictList = emptyList()
         }
-        deviceId = OnlineAccountStore.deviceId(context).ifBlank { null }
-        changeKey = OnlineSyncCrypto.deriveChangeKey(vaultKey!!)
+
         onlineMode = true
-        emit()
-        syncOnline(context)
+        deviceId = OnlineAccountStore.deviceId(context).ifBlank { null }
+        backend = online
+        emitState()
+        // 总是从游标 0 全量拉取：彻底规避历史坏游标导致空库，个人库数据量极小、幂等，成本可忽略。
+        OnlineAccountStore.saveCursor(context, "0")
+        // 解锁即进入 VaultHome：云端同步在后台进行。除「登录已过期（HTTP 401）」外，任何同步失败
+        // （网络/验签/解密）都绝不让解锁闪退，仅记日志；之后用户可在密码库首页下拉刷新重试。
+        // 登录已过期的，清会话态并抛 TokenExpired，由解锁页跳回登录页并提示。
+        val syncResult = try {
+            online.sync(context)
+        } catch (t: Throwable) {
+            Log.e(TAG, "post-unlock sync crashed (ignored to avoid crash)", t)
+            OnlineSyncResult.TRANSPORT_ERROR
+        }
+        if (syncResult == OnlineSyncResult.AUTH_EXPIRED) {
+            logoutOnline(context)
+            throw ApiException.TokenExpired()
+        }
     }
 
-    /** 从云端拉取变更：验签 → 解密 → 合并（冲突进冲突中心）→ 更新游标与本地缓存。 */
-    suspend fun syncOnline(context: Context) {
-        val token = OnlineAccountStore.token(context) ?: return
-        val vaultId = onlineVaultId ?: return
-        val key = vaultKey ?: return
-        val api = ApiClient(OnlineAccountStore.baseUrl(context))
+    /**
+     * 指纹解锁在线保险库：vaultKey 已由 Keystore 经指纹认证解出，跳过主密码解 envelope。
+     * 其余流程与 [unlockOnline] 的「已有保险库」分支一致：进在线会话 → 全量从云端拉取 → 后台同步。
+     * 仅在已存在 vaultId 时可用（开启指纹前必然已用主密码成功解锁过一次）。
+     */
+    suspend fun unlockOnlineWithVaultKey(context: Context, key: ByteArray) = withContext(Dispatchers.IO) {
+        val vaultId = OnlineAccountStore.vaultId(context)
+        if (vaultId.isBlank()) throw IllegalStateException("无在线保险库，请用主密码解锁")
 
-        try {
-            val devices = api.listDevices(token)
-            devicePubKeyMap = devices.associate { it.id to it.publicSigningKey }
-        } catch (e: ApiException.TokenExpired) {
+        vaultKey = key
+        val online = OnlineVaultBackend(context, vaultId, key)
+        if (!OnlineAccountStore.hasDevice(context)) online.ensureDevice()
+        // 在线模式数据一律以服务端为真理：进入即全量从云端拉取，不在本机缓存读取。
+        records = emptyList()
+        conflictList = emptyList()
+
+        onlineMode = true
+        deviceId = OnlineAccountStore.deviceId(context).ifBlank { null }
+        backend = online
+        emitState()
+        OnlineAccountStore.saveCursor(context, "0")
+        val syncResult = try {
+            online.sync(context)
+        } catch (t: Throwable) {
+            Log.e(TAG, "post-biometric-unlock sync crashed (ignored to avoid crash)", t)
+            OnlineSyncResult.TRANSPORT_ERROR
+        }
+        if (syncResult == OnlineSyncResult.AUTH_EXPIRED) {
             logoutOnline(context)
-            return
-        } catch (e: Exception) {
-            android.util.Log.w("OnlineSync", "listDevices failed", e)
+            throw ApiException.TokenExpired()
         }
-
-        val changes = try {
-            api.listChanges(vaultId, OnlineAccountStore.cursor(context), token)
-        } catch (e: ApiException.TokenExpired) {
-            logoutOnline(context)
-            return
-        } catch (e: Exception) {
-            android.util.Log.w("OnlineSync", "listChanges failed", e)
-            return
-        }
-
-        var maxSeq = OnlineAccountStore.cursor(context).toLongOrNull() ?: 0L
-        for (c in changes) {
-            val pub = devicePubKeyMap?.get(c.deviceId)?.fromBase64()
-            if (pub == null) {
-                android.util.Log.w("OnlineSync", "no public key for device ${c.deviceId}; skip")
-                continue
-            }
-            try {
-                val plaintext = OnlineSyncCrypto.open(
-                    OnlineSyncEnvelope(c.ciphertext, c.signature, c.changeId),
-                    vaultId,
-                    key,
-                    pub,
-                )
-                val change = OnlineChangeJson.decode(plaintext)
-                if (change.operation == "delete") applyRemoteDelete(change.record.id)
-                else applyRemoteUpsert(change.record)
-            } catch (e: Exception) {
-                android.util.Log.w("OnlineSync", "verify/open change ${c.changeId} failed", e)
-                continue
-            }
-            val seq = c.sequence.toLongOrNull() ?: 0L
-            if (seq > maxSeq) maxSeq = seq
-        }
-
-        if (changes.isNotEmpty()) {
-            OnlineAccountStore.saveCursor(context, maxSeq.toString())
-            persist(context, key)
-            emit()
-        }
-        OnlineAccountStore.saveLastSync(context, System.currentTimeMillis())
     }
 
-    /** 登出：清除账户态与内存密钥（本地缓存文件保留，重新登录会被覆盖）。 */
+    /** 触发一次同步（在线拉取 + 补传；本地为 no-op）。返回 [OnlineSyncResult]，便于 UI 感知登录过期。 */
+    suspend fun sync(context: Context): OnlineSyncResult {
+        return backend?.sync(context) ?: OnlineSyncResult.SUCCESS
+    }
+
+    /** 冲刷离线待传队列（在线）；本地为 no-op。返回 [OnlineSyncResult]。 */
+    suspend fun flushPending(context: Context): OnlineSyncResult {
+        return backend?.flushPending(context) ?: OnlineSyncResult.SUCCESS
+    }
+
+    /** 离线待传变更数（在线模式；本地恒为 0）。 */
+    suspend fun pendingCount(context: Context): Int = backend?.pendingCount(context) ?: 0
+
+    /** 登出：清账户态与内存密钥（本地缓存文件保留，重新登录会被覆盖/重建）。 */
     fun logoutOnline(context: Context) {
-        OnlineAccountStore.clear(context)
+        backend?.logout(context)
         onlineMode = false
-        onlineVaultId = null
-        changeKey = null
-        devicePubKeyMap = null
         lock()
     }
-
-    /**
-     * 登记本设备：生成 Ed25519 密钥对，上传公钥，私钥安全存储。
-     * 服务端不存储私钥；私钥仅用于签署本设备上传的变更。
-     */
-    private suspend fun enrollDevice(context: Context, api: ApiClient, token: String) {
-        val (seed, pub) = OnlineSyncCrypto.generateDeviceKey()
-        val device = api.registerDevice(Build.MODEL ?: "Android device", pub.toBase64(), token)
-        OnlineAccountStore.saveDevice(context, device.id, seed.toBase64())
-    }
-
-    /**
-     * 推送一条变更（fire-and-forget，不阻塞本地写入）。
-     * changeId 由 (vaultId, itemId, revision, op) 确定性派生，配合确定性 nonce 保证重试幂等。
-     */
-    private fun pushChange(context: Context, record: PwdlockRecord, op: String) {
-        val vaultId = onlineVaultId ?: return
-        val key = vaultKey ?: return
-        val seedB64 = OnlineAccountStore.signingSeed(context)
-        if (seedB64.isBlank()) return
-        val changeId = deterministicChangeId(vaultId, record.id, record.revision, op)
-        onlineScope.launch {
-            try {
-                val token = OnlineAccountStore.token(context) ?: return@launch
-                val api = ApiClient(OnlineAccountStore.baseUrl(context))
-                val plaintext = OnlineChangeJson.encode(OnlineVaultChange(op, record))
-                val env = OnlineSyncCrypto.seal(plaintext, vaultId, changeId, key, seedB64.fromBase64())
-                api.appendChange(
-                    vaultId,
-                    env.changeId,
-                    OnlineAccountStore.deviceId(context),
-                    OnlineSyncEnvelopeWire(env.ciphertext, env.signature),
-                    token,
-                )
-            } catch (e: ApiException.TokenExpired) {
-                android.util.Log.w("OnlineSync", "token expired; needs re-login")
-            } catch (e: Exception) {
-                android.util.Log.w("OnlineSync", "push $op failed", e)
-            }
-        }
-    }
-
-    private fun deterministicChangeId(vaultId: String, itemId: String, revision: Long, op: String): String {
-        val raw = "$vaultId:$itemId:$revision:$op".toByteArray(Charsets.UTF_8)
-        val hash = MessageDigest.getInstance("SHA-256").digest(raw)
-        val msb = ByteBuffer.wrap(hash.copyOfRange(0, 8)).long
-        val lsb = ByteBuffer.wrap(hash.copyOfRange(8, 16)).long
-        return UUID(msb, lsb).toString()
-    }
-
-    /** 应用远端 upsert：同 id 同内容跳过；不同则进入冲突中心（忽略 deviceId 差异）。 */
-    private fun applyRemoteUpsert(record: PwdlockRecord) {
-        val idx = records.indexOfFirst { it.id == record.id }
-        if (idx < 0) {
-            records = records + record
-            return
-        }
-        val local = records[idx]
-        if (sameContent(local, record)) return
-        val duplicate = conflictList.any {
-            it.recordId == record.id && sameContent(it.local, local) && sameContent(it.imported, record)
-        }
-        if (duplicate) return
-        conflictList = conflictList + LocalConflict(
-            id = UUID.randomUUID().toString(),
-            recordId = record.id,
-            title = local.title,
-            createdAtMs = System.currentTimeMillis(),
-            local = local,
-            imported = record,
-        )
-    }
-
-    private fun applyRemoteDelete(recordId: String) {
-        records = records.filter { it.id != recordId }
-    }
-
-    /** 内容等价（忽略 deviceId，仅比较业务字段与修订号）。 */
-    private fun sameContent(a: PwdlockRecord, b: PwdlockRecord): Boolean =
-        a.id == b.id &&
-            a.title == b.title &&
-            a.username == b.username &&
-            a.password == b.password &&
-            a.url == b.url &&
-            a.category == b.category &&
-            a.note == b.note &&
-            a.createdAtMs == b.createdAtMs &&
-            a.updatedAtMs == b.updatedAtMs &&
-            a.revision == b.revision
 
     // endregion
 
     /** 修改主密码：用旧密码解出 vaultKey，再用新密码重新包装（记录不变，vaultKey 不变）。 */
     fun changeMasterPassword(context: Context, oldPassword: String, newPassword: String) {
-        val store = VaultStore(context)
-        val meta = VaultMetadataCodec.decode(store.readMeta())
+        val oldEnvelopeB64 = backend?.readEnvelope(context)
+            ?: throw IllegalStateException("no active vault")
+        val meta = VaultMetadataCodec.decode(Base64.decode(oldEnvelopeB64, Base64.NO_WRAP))
         val key = VaultKeyEnvelope.unwrap(meta, oldPassword)
         val newMeta = VaultKeyEnvelope.wrap(
             vaultKey = key,
@@ -611,58 +579,14 @@ object VaultSession {
             passwordSalt = CryptoIO.randomBytes(16),
             wrapNonce = CryptoIO.randomBytes(12),
         )
-        store.writeMeta(VaultMetadataCodec.encode(newMeta))
+        val newEnvB64 = Base64.encodeToString(VaultMetadataCodec.encode(newMeta), Base64.NO_WRAP)
+        backend?.onMasterPasswordChanged(context, newEnvB64)
         vaultKey = key
     }
 
     // region 内部
 
-    private fun persist(context: Context, key: ByteArray) {
-        if (onlineVaultId != null) {
-            // 在线模式：写入按 vaultId 隔离的本地缓存目录。
-            val cache = OnlineVaultCache(context, onlineVaultId!!)
-            cache.writePayload(cache.encrypt(VaultJson.encodePayload(currentPayload()).toByteArray(Charsets.UTF_8), key))
-            cache.writeConflicts(cache.encrypt(ConflictJson.encode(conflictList).toByteArray(Charsets.UTF_8), key))
-            return
-        }
-        val store = VaultStore(context)
-        store.writePayload(encryptPayload(currentPayload(), key))
-        store.writeConflicts(encryptBytes(ConflictJson.encode(conflictList).toByteArray(Charsets.UTF_8), key))
-    }
-
-    private fun currentPayload(): PwdlockPayload {
-        val dev = deviceId?.let { UUID.fromString(it) } ?: UUID.randomUUID()
-        return PwdlockPayload(
-            exportId = UUID.randomUUID(),
-            sourceVaultId = dev,
-            createdAtMs = System.currentTimeMillis(),
-            records = records,
-        )
-    }
-
-    private fun emptyPayload(dev: UUID) = PwdlockPayload(
-        exportId = UUID.randomUUID(),
-        sourceVaultId = dev,
-        createdAtMs = System.currentTimeMillis(),
-        records = emptyList(),
-    )
-
-    private fun encryptPayload(p: PwdlockPayload, key: ByteArray): ByteArray =
-        encryptBytes(VaultJson.encodePayload(p).toByteArray(Charsets.UTF_8), key)
-
-    private fun decryptPayload(bytes: ByteArray, key: ByteArray): PwdlockPayload =
-        VaultJson.decodePayload(String(decryptBytes(bytes, key), Charsets.UTF_8))
-
-    private fun encryptBytes(plaintext: ByteArray, key: ByteArray): ByteArray {
-        val nonce = AesGcm.randomNonce()
-        return nonce + AesGcm.seal(plaintext, key, nonce)
-    }
-
-    private fun decryptBytes(bytes: ByteArray, key: ByteArray): ByteArray {
-        val nonce = bytes.copyOfRange(0, 12)
-        val sealed = bytes.copyOfRange(12, bytes.size)
-        return AesGcm.open(sealed, key, nonce)
-    }
+    private fun currentPayload(): PwdlockPayload = VaultCipher.buildPayload(records, deviceId)
 
     /** 逐字段比较是否逻辑等价（对齐 macOS `logicallyEquivalent`）。 */
     private fun logicallyEquivalent(a: PwdlockRecord, b: PwdlockRecord): Boolean =
@@ -677,6 +601,19 @@ object VaultSession {
             a.updatedAtMs == b.updatedAtMs &&
             a.revision == b.revision &&
             a.deviceId == b.deviceId
+
+    /** 内容等价（忽略 deviceId，仅比较业务字段与修订号）。 */
+    private fun sameContent(a: PwdlockRecord, b: PwdlockRecord): Boolean =
+        a.id == b.id &&
+            a.title == b.title &&
+            a.username == b.username &&
+            a.password == b.password &&
+            a.url == b.url &&
+            a.category == b.category &&
+            a.note == b.note &&
+            a.createdAtMs == b.createdAtMs &&
+            a.updatedAtMs == b.updatedAtMs &&
+            a.revision == b.revision
 
     private fun checkUnlocked(): ByteArray = vaultKey ?: throw IllegalStateException("vault is locked")
     private fun norm(s: String): String = Normalizer.normalize(s, Normalizer.Form.NFC)

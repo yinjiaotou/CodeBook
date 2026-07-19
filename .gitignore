@@ -8,6 +8,7 @@ dist
 **/build/
 *.apk
 *.aab
+platforms/serve/.env
 
 # Android (local mode)
 platforms/android/.gradle/

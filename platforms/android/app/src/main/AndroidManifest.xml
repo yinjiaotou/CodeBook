@@ -5,6 +5,9 @@
     <!-- 指纹解锁：仅本地模式主密码处使用系统 BiometricPrompt -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
 
+    <!-- 在线模式：必须声明网络权限，否则所有 HttpURLConnection 请求会直接抛 Permission denied -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <!-- 离线密码管理器：关闭自动备份，避免明文/密钥被系统云备份 -->
     <application
         android:name=".PwdlockApplication"

@@ -22,6 +22,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
+import com.pwdlock.android.data.vault.VaultSession
 import com.pwdlock.android.navigation.Screen
 import com.pwdlock.android.ui.components.PwdlockButton
 import com.pwdlock.android.ui.theme.PwdlockColors
@@ -74,7 +75,15 @@ fun AutoLockScreen(navController: NavHostController) {
         Spacer(modifier = Modifier.height(SpaceXXL))
         PwdlockButton(
             text = "解锁",
-            onClick = { navController.navigate(Screen.Unlock.route) },
+            onClick = {
+                // 按模式回落地：在线会话回到在线主密码页，本地会话回到本地解锁页。
+                // onlineMode 在 lock() 中保留，仅用于此处导航判断。
+                if (VaultSession.onlineMode) {
+                    navController.navigate(Screen.OnlineMasterPassword.route)
+                } else {
+                    navController.navigate(Screen.Unlock.route)
+                }
+            },
         )
     }
 }

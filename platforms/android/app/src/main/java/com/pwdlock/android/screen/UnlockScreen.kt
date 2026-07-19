@@ -1,9 +1,11 @@
 package com.pwdlock.android.screen
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -12,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.Icon
@@ -33,6 +36,8 @@ import android.util.Log
 import android.widget.Toast
 import androidx.navigation.NavHostController
 import com.pwdlock.android.data.vault.BiometricUnlock
+import com.pwdlock.android.data.AppModePrefs
+import com.pwdlock.android.data.online.OnlineAccountStore
 import com.pwdlock.android.data.vault.VaultSession
 import com.pwdlock.android.navigation.Screen
 import com.pwdlock.android.ui.components.LoadingOverlay
@@ -46,6 +51,7 @@ import com.pwdlock.android.ui.theme.SpaceLG
 import com.pwdlock.android.ui.theme.SpaceXL
 import com.pwdlock.android.ui.theme.SpaceXXL
 import com.pwdlock.android.ui.theme.SpaceMD
+import com.pwdlock.android.ui.theme.SpaceSM
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -63,6 +69,7 @@ fun UnlockScreen(navController: NavHostController) {
     val canBiometric = remember { BiometricUnlock.canOfferUnlock(context) }
 
     fun toVaultHome() {
+        AppModePrefs.setLastMode(context, "local")
         navController.navigate(Screen.VaultHome.route) {
             popUpTo(Screen.ModeSelect.route)
         }
@@ -210,6 +217,38 @@ fun UnlockScreen(navController: NavHostController) {
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+
+        Spacer(modifier = Modifier.height(SpaceMD))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = {
+                    AppModePrefs.setLastMode(context, "online")
+                    // 按本机是否仍存有在线登录信息（token）决定直接进入在线主密码页
+                    // （免重登）还是先到登录页。
+                    val onlineRoute =
+                        if (OnlineAccountStore.hasToken(context)) Screen.OnlineMasterPassword.route else Screen.OnlineLogin.route
+                    navController.navigate(onlineRoute) {
+                        popUpTo(Screen.ModeSelect.route) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                }),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Cloud,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(modifier = Modifier.padding(start = SpaceSM))
+            Text(
+                text = "切换到在线模式",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
         }
 
         if (importing) {

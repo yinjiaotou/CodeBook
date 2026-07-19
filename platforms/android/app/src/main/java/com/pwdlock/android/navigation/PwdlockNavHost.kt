@@ -1,9 +1,13 @@
 package com.pwdlock.android.navigation
 
-import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -75,10 +79,44 @@ fun PwdlockNavHost(
     NavHost(
         navController = navController,
         startDestination = Screen.ModeSelect.route,
-        enterTransition = { fadeIn(animationSpec = tween(durationMillis = 200, easing = LinearEasing)) },
-        exitTransition = { fadeOut(animationSpec = tween(durationMillis = 200, easing = LinearEasing)) },
-        popEnterTransition = { fadeIn(animationSpec = tween(durationMillis = 200, easing = LinearEasing)) },
-        popExitTransition = { fadeOut(animationSpec = tween(durationMillis = 200, easing = LinearEasing)) },
+        // 共享轴向（横向）+ 景深缩放：新页从右滑入并轻微放大、旧页向左滑出并微微放大后退，
+        // 形成「推进入栈 / 弹出回退」的空间纵深感；返回时方向相反。作用于所有页面。
+        enterTransition = {
+            slideInHorizontally(
+                initialOffsetX = { it },
+                animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+            ) + fadeIn(animationSpec = tween(350)) + scaleIn(
+                initialScale = 0.96f,
+                animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+            )
+        },
+        exitTransition = {
+            slideOutHorizontally(
+                targetOffsetX = { -it },
+                animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+            ) + fadeOut(animationSpec = tween(350)) + scaleOut(
+                targetScale = 1.04f,
+                animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+            )
+        },
+        popEnterTransition = {
+            slideInHorizontally(
+                initialOffsetX = { -it },
+                animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+            ) + fadeIn(animationSpec = tween(350)) + scaleIn(
+                initialScale = 0.96f,
+                animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+            )
+        },
+        popExitTransition = {
+            slideOutHorizontally(
+                targetOffsetX = { it },
+                animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+            ) + fadeOut(animationSpec = tween(350)) + scaleOut(
+                targetScale = 1.04f,
+                animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing),
+            )
+        },
     ) {
         composable(Screen.ModeSelect.route) { ModeSelectScreen(navController) }
         composable(Screen.Welcome.route) { WelcomeScreen(navController) }

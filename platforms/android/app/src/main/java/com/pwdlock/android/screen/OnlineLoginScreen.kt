@@ -33,13 +33,12 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
 import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
+import com.pwdlock.android.data.AppModePrefs
 import com.pwdlock.android.data.vault.VaultSession
 import com.pwdlock.android.navigation.Screen
-import com.pwdlock.android.ui.components.InfoNote
 import com.pwdlock.android.ui.components.LoadingOverlay
 import com.pwdlock.android.ui.components.PasswordField
 import com.pwdlock.android.ui.components.PwdlockButton
-import com.pwdlock.android.ui.components.PwdlockOutlinedButton
 import com.pwdlock.android.ui.components.PwdlockTextField
 import com.pwdlock.android.ui.components.PwdlockTopBar
 import com.pwdlock.android.ui.theme.PwdlockColors
@@ -123,7 +122,12 @@ fun OnlineLoginScreen(navController: NavHostController) {
                         try {
                             VaultSession.loginOnline(context, account.trim(), password)
                             loading = false
-                            navController.navigate(Screen.OnlineMasterPassword.route)
+                            AppModePrefs.setLastMode(context, "online")
+                            navController.navigate(Screen.OnlineMasterPassword.route) {
+                                // 与本地解锁对齐：进入在线主密码页后清掉 ModeSelect 以下的历史，
+                                // 避免登录页残留在回退栈（返回键不会落回登录页）。
+                                popUpTo(Screen.ModeSelect.route)
+                            }
                         } catch (e: Exception) {
                             loading = false
                             val msg = if (e is com.pwdlock.android.data.network.ApiException.TokenExpired) {
@@ -136,12 +140,6 @@ fun OnlineLoginScreen(navController: NavHostController) {
                     }
                 },
             )
-            Spacer(modifier = Modifier.height(SpaceMD))
-            PwdlockOutlinedButton(
-                text = "使用生物识别登录",
-                onClick = { /* 占位：调用系统生物识别 */ },
-            )
-
             Spacer(modifier = Modifier.height(SpaceLG))
             Row(
                 modifier = Modifier
@@ -163,11 +161,6 @@ fun OnlineLoginScreen(navController: NavHostController) {
                 )
             }
 
-            Spacer(modifier = Modifier.height(SpaceXL))
-            InfoNote(
-                title = "账号与保险库相互独立",
-                text = "服务器仅保存你主密码加密后的数据；登录凭证用于同步，主密码用于解密，二者不可互相替代。",
-            )
             if (loading) LoadingOverlay("登录中…")
         }
         }

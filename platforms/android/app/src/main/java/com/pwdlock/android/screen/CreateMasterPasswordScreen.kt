@@ -29,6 +29,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
+import com.pwdlock.android.data.AppModePrefs
 import com.pwdlock.android.data.vault.VaultSession
 import com.pwdlock.android.navigation.Screen
 import com.pwdlock.android.ui.components.AccentNote
@@ -201,6 +202,7 @@ fun CreateMasterPasswordScreen(navController: NavHostController) {
                                 withContext(Dispatchers.Main) { navController.popBackStack() }
                             } else {
                                 VaultSession.create(context, password)
+                                AppModePrefs.setLastMode(context, "local")
                                 withContext(Dispatchers.Main) {
                                     navController.navigate(Screen.VaultHome.route) {
                                         popUpTo(Screen.ModeSelect.route)

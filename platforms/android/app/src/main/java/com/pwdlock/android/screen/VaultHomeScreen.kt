@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
@@ -28,7 +30,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material.ExperimentalMaterialApi
+import androidx.compose.material.pullrefresh.PullRefreshIndicator
+import androidx.compose.material.pullrefresh.rememberPullRefreshState
+import androidx.compose.material.pullrefresh.pullRefresh
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -39,6 +46,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import android.app.Activity
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.rememberCoroutineScope
@@ -47,6 +55,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.currentBackStackEntryAsState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.pwdlock.android.data.vault.OnlineSyncResult
 import com.pwdlock.android.data.vault.VaultSession
 import com.pwdlock.android.navigation.Screen
 import com.pwdlock.android.ui.components.PwdlockSearchBar
@@ -59,13 +68,35 @@ import com.pwdlock.android.ui.theme.SpaceLG
 import com.pwdlock.android.ui.theme.SpaceMD
 import com.pwdlock.android.ui.theme.SpaceSM
 
+@OptIn(ExperimentalMaterialApi::class)
 @Composable
 fun VaultHomeScreen(navController: NavHostController) {
     val items by VaultSession.items.collectAsState()
+    val conflicts by VaultSession.conflicts.collectAsState()
     val context = LocalContext.current
     val activity = context as? Activity
     val scope = rememberCoroutineScope()
     var backPressedOnce by remember { mutableStateOf(false) }
+
+    // 在线模式：进入密码库首页即触发一次云端同步，确保列表数据始终来自服务端（而非本机缓存）。
+    // 同步失败仅记日志、不闪退；离线时列表保持当前内存态。若同步发现登录已过期（HTTP 401），
+    // 提示并跳回登录页——云端才是真理，过期态不应停留在密码库。
+    LaunchedEffect(Unit) {
+        if (VaultSession.onlineMode) {
+            val result = try {
+                VaultSession.sync(context)
+            } catch (t: Throwable) {
+                Log.e("VaultHome", "post-enter sync failed", t)
+                OnlineSyncResult.TRANSPORT_ERROR
+            }
+            if (result == OnlineSyncResult.AUTH_EXPIRED) {
+                Toast.makeText(context, "登录已过期，请重新登录", Toast.LENGTH_LONG).show()
+                navController.navigate(Screen.OnlineLogin.route) {
+                    popUpTo(Screen.ModeSelect.route) { inclusive = true }
+                }
+            }
+        }
+    }
 
     // 当前是否停留在密码库首页：是则拦截系统返回键，改为「再按一次退出」。
     // 在子页面（设置、详情、编辑）时该 Handler 禁用，返回键走默认出栈。
@@ -104,7 +135,7 @@ fun VaultHomeScreen(navController: NavHostController) {
             item.username.contains(query, ignoreCase = true)
         inCat && inQuery
     }
-    val hasConflicts = false
+    val hasConflicts = conflicts.firstOrNull() != null
 
     Scaffold(
         topBar = {
@@ -115,7 +146,14 @@ fun VaultHomeScreen(navController: NavHostController) {
                     IconButton(
                         onClick = {
                             VaultSession.lock()
-                            navController.navigate(Screen.AutoLock.route) {
+                            // 锁定时按模式回落地：在线 → 在线主密码页；本地 → 本地锁页。
+                            // onlineMode 在 lock() 中保留，专门用于此导航判断。
+                            val route = if (VaultSession.onlineMode) {
+                                Screen.OnlineMasterPassword.route
+                            } else {
+                                Screen.AutoLock.route
+                            }
+                            navController.navigate(route) {
                                 popUpTo(Screen.ModeSelect.route)
                                 launchSingleTop = true
                             }
@@ -141,11 +179,36 @@ fun VaultHomeScreen(navController: NavHostController) {
             }
         },
     ) { inner ->
-        Column(
+        var refreshing by remember { mutableStateOf(false) }
+        val pullRefreshState = rememberPullRefreshState(refreshing, onRefresh = {
+            // 下拉刷新仅在线模式有意义（本地模式无远端，无需同步）。
+            if (!VaultSession.onlineMode) {
+                refreshing = false
+                return@rememberPullRefreshState
+            }
+            scope.launch {
+                refreshing = true
+                try {
+                    val r1 = VaultSession.flushPending(context)
+                    val r2 = VaultSession.sync(context)
+                    if (r1 == OnlineSyncResult.AUTH_EXPIRED || r2 == OnlineSyncResult.AUTH_EXPIRED) {
+                        Toast.makeText(context, "登录已过期，请重新登录", Toast.LENGTH_LONG).show()
+                        navController.navigate(Screen.OnlineLogin.route) {
+                            popUpTo(Screen.ModeSelect.route) { inclusive = true }
+                        }
+                    }
+                } finally {
+                    refreshing = false
+                }
+            }
+        })
+        Box(
             modifier = Modifier
                 .fillMaxSize()
+                .pullRefresh(pullRefreshState)
                 .padding(inner),
         ) {
+            Column(modifier = Modifier.fillMaxSize()) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -173,9 +236,10 @@ fun VaultHomeScreen(navController: NavHostController) {
                 }
             }
 
-            if (hasConflicts) {
+            // 冲突中心为本地模式导入合并能力；在线模式服务端即真理、无冲突概念，故不展示。
+            if (!VaultSession.onlineMode && hasConflicts) {
                 ConflictBanner(
-                    count = 0,
+                    count = conflicts.size,
                     onClick = { navController.navigate(Screen.ConflictCenter.route) },
                 )
             }
@@ -197,7 +261,7 @@ fun VaultHomeScreen(navController: NavHostController) {
                 LazyColumn(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    items(filtered, key = { it.id }) { item ->
+                    itemsIndexed(filtered, key = { index, item -> "${item.id}@${index}" }) { _, item ->
                         VaultItemRow(
                             item = item,
                             onClick = { navController.navigate("item_detail/${item.id}") },
@@ -210,6 +274,14 @@ fun VaultHomeScreen(navController: NavHostController) {
                     }
                 }
             }
+        }
+            PullRefreshIndicator(
+                refreshing = refreshing,
+                state = pullRefreshState,
+                modifier = Modifier.align(Alignment.TopCenter),
+                backgroundColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.primary,
+            )
         }
     }
 }

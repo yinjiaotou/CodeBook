@@ -19,7 +19,7 @@ import androidx.security.crypto.MasterKeys
  */
 object OnlineAccountStore {
     private const val FILE = "pwdlock_online_account"
-    private const val DEF_BASE_URL = "http://10.0.2.2:3000/v1"
+    private const val DEF_BASE_URL = "http://124.223.115.40:3000/v1"
 
     private const val K_TOKEN = "token"
     private const val K_LOGIN = "loginName"
@@ -30,6 +30,12 @@ object OnlineAccountStore {
     private const val K_SEED = "signingSeed"
     private const val K_BASE_URL = "baseUrl"
     private const val K_LAST_SYNC = "lastSyncMs"
+
+    // 在线模式指纹解锁（独立字段，与本地 SettingsStore 的生物识别数据隔离）：
+    // 仅保存 Keystore 加密后的 vaultKey 密文与 IV；密文本身不可解读，明文 vaultKey 永不落盘。
+    private const val K_BIO_ENABLED = "bioEnabled"
+    private const val K_BIO_CT = "bioCiphertext"
+    private const val K_BIO_IV = "bioIv"
 
     private var prefs: SharedPreferences? = null
 
@@ -61,6 +67,34 @@ object OnlineAccountStore {
     fun hasToken(context: Context): Boolean = !token(context).isNullOrBlank()
     fun hasVault(context: Context): Boolean = vaultId(context).isNotBlank()
     fun hasDevice(context: Context): Boolean = deviceId(context).isNotBlank()
+
+    // region 在线指纹解锁状态（独立存储，登出由 clear() 一并清除）
+
+    fun bioEnabled(context: Context): Boolean = ensure(context).getBoolean(K_BIO_ENABLED, false)
+    fun bioCiphertext(context: Context): String? = ensure(context).getString(K_BIO_CT, null)
+    fun bioIv(context: Context): String? = ensure(context).getString(K_BIO_IV, null)
+
+    /** 是否已真正具备可用指纹凭据（开关开 + 密文/IV 齐全）。解锁页据此决定是否提供指纹入口。 */
+    fun hasBiometric(context: Context): Boolean =
+        bioEnabled(context) && !bioCiphertext(context).isNullOrBlank() && !bioIv(context).isNullOrBlank()
+
+    fun saveBiometric(context: Context, ctB64: String, ivB64: String) {
+        ensure(context).edit()
+            .putBoolean(K_BIO_ENABLED, true)
+            .putString(K_BIO_CT, ctB64)
+            .putString(K_BIO_IV, ivB64)
+            .apply()
+    }
+
+    fun clearBiometric(context: Context) {
+        ensure(context).edit()
+            .remove(K_BIO_ENABLED)
+            .remove(K_BIO_CT)
+            .remove(K_BIO_IV)
+            .apply()
+    }
+
+    // endregion
 
     fun saveCredentials(context: Context, token: String, loginName: String) {
         ensure(context).edit().putString(K_TOKEN, token).putString(K_LOGIN, loginName).apply()

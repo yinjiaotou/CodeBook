@@ -43,6 +43,7 @@ import kotlinx.coroutines.withContext
 @Composable
 fun ImportPreviewScreen(navController: NavHostController) {
     val context = LocalContext.current
+    val online = VaultSession.onlineMode
     val scope = rememberCoroutineScope()
     var password by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
@@ -68,7 +69,11 @@ fun ImportPreviewScreen(navController: NavHostController) {
                 verticalArrangement = Arrangement.spacedBy(SpaceLG),
             ) {
                 Text(
-                    text = "输入该 .pwdlock 文件的导出密码以解密并导入。导入后数据会与本地保险库合并，冲突项会被保留待你裁决。",
+                    text = if (online) {
+                        "输入该 .pwdlock 文件的导出密码以解密并导入。记录会合并进当前在线保险库（服务端即真理，同 id 异内容直接覆盖），随后自动回传云端。"
+                    } else {
+                        "输入该 .pwdlock 文件的导出密码以解密并导入。导入后数据会与本地保险库合并，冲突项会被保留待你裁决。"
+                    },
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -105,9 +110,11 @@ fun ImportPreviewScreen(navController: NavHostController) {
                                 return@launch
                             }
                             // 2) 合并导入（用本地 vaultKey 重新加密 = 重置主密码）。
-                            //    无论成功失败都不锁定，直接显示密码库；有冲突则进入冲突界面。
+                            //    本地模式：同 id 异内容进冲突中心；在线模式：服务端即真理，直接覆盖、无冲突。
+                            //    无论成功失败都不锁定，直接显示密码库。
                             try {
-                                val result = VaultSession.mergeImport(context, payload)
+                                val conflictFree = VaultSession.onlineMode
+                                val result = VaultSession.mergeImport(context, payload, conflictFree)
                                 VaultSession.clearPendingImport()
                                 VaultSession.pendingMergePayload = null
                                 withContext(Dispatchers.Main) {
@@ -119,12 +126,12 @@ fun ImportPreviewScreen(navController: NavHostController) {
                                     Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                                     importing = false
                                     if (result.conflicts > 0) {
-                                        // 有冲突：直接进入冲突界面，裁决完成后再进密码库刷新数据。
+                                        // 有冲突（仅本地模式）：直接进入冲突界面，裁决完成后再进密码库刷新数据。
                                         navController.navigate(Screen.ConflictCenter.route) {
                                             popUpTo(Screen.ModeSelect.route)
                                         }
                                     } else {
-                                        // 无冲突：进入密码库（StateFlow 已更新，自动刷新）。
+                                        // 无冲突 / 在线模式覆盖：进入密码库（StateFlow 已更新，自动刷新）。
                                         navController.navigate(Screen.VaultHome.route) {
                                             popUpTo(Screen.ModeSelect.route)
                                         }

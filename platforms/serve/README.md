@@ -29,3 +29,5 @@ For the existing cloud PostgreSQL instance, keep PostgreSQL bound to loopback an
 ## Deployment
 
 Build the image with `docker build -t pwdlock-serve .`. Production must provide a unique 32-byte-or-longer `JWT_SECRET`, a managed `DATABASE_URL`, HTTPS termination, backups, and a deliberate database-migration process. Apply SQL files in `db/init/` for a fresh database and then `db/migrations/` in lexical order. Do not enable TypeORM schema synchronization in production.
+
+For the complete migration, server deployment, systemd, port-opening, verification, and rollback procedure, see [DEPLOYMENT.md](./DEPLOYMENT.md).

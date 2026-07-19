@@ -22,6 +22,8 @@ import javax.crypto.spec.GCMParameterSpec
  */
 object BiometricKeystore {
     private const val KEY_ALIAS = "pwdlock_bio_key"
+    /** 在线模式独立 Keystore alias，与本地指纹密钥彻底隔离。 */
+    const val ALIAS_ONLINE = "pwdlock_bio_key_online"
     private const val ANDROID_KEYSTORE = "AndroidKeyStore"
     private const val TRANSFORMATION =
         "${KeyProperties.KEY_ALGORITHM_AES}/${KeyProperties.BLOCK_MODE_GCM}/${KeyProperties.ENCRYPTION_PADDING_NONE}"
@@ -32,13 +34,13 @@ object BiometricKeystore {
 
     private fun keyStore(): KeyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
 
-    private fun getOrCreateKey(): SecretKey {
+    private fun getOrCreateKey(alias: String = KEY_ALIAS): SecretKey {
         val ks = keyStore()
-        (ks.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
+        (ks.getKey(alias, null) as? SecretKey)?.let { return it }
 
         val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
         val builder = KeyGenParameterSpec.Builder(
-            KEY_ALIAS,
+            alias,
             KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
         )
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
@@ -59,9 +61,9 @@ object BiometricKeystore {
     }
 
     /** 启用指纹解锁：返回 ENCRYPT 模式 Cipher（认证后 doFinal 加密 vaultKey）。 */
-    fun encryptCipher(): Cipher {
+    fun encryptCipher(alias: String = KEY_ALIAS): Cipher {
         val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
+        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey(alias))
         return cipher
     }
 
@@ -69,16 +71,16 @@ object BiometricKeystore {
      * 指纹解锁：返回 DECRYPT 模式 Cipher（认证后 doFinal 解出 vaultKey）。
      * @throws KeyPermanentlyInvalidatedException 录入了新指纹导致密钥失效时。
      */
-    fun decryptCipher(iv: ByteArray): Cipher {
+    fun decryptCipher(iv: ByteArray, alias: String = KEY_ALIAS): Cipher {
         val ks = keyStore()
-        val key = ks.getKey(KEY_ALIAS, null) as? SecretKey
+        val key = ks.getKey(alias, null) as? SecretKey
             ?: throw KeyPermanentlyInvalidatedException("biometric key missing")
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
         return cipher
     }
 
-    fun deleteKey() {
-        runCatching { keyStore().deleteEntry(KEY_ALIAS) }
+    fun deleteKey(alias: String = KEY_ALIAS) {
+        runCatching { keyStore().deleteEntry(alias) }
     }
 }

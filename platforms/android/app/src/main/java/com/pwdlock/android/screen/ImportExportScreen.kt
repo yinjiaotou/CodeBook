@@ -49,6 +49,7 @@ import com.pwdlock.android.ui.theme.SpaceSM
 @Composable
 fun ImportExportScreen(navController: NavHostController) {
     val context = LocalContext.current
+    val online = VaultSession.onlineMode
 
     // 进入导入/导出页即开启「导入流程豁免」：覆盖选文件与在此页停留的全程，
     // 避免前台闲置锁定或切后台锁定在导入前清空 vaultKey，导致后续 mergeImport 抛「vault is locked」。
@@ -90,7 +91,11 @@ fun ImportExportScreen(navController: NavHostController) {
                 icon = Icons.Filled.FileUpload,
                 tint = PwdlockColors.Success,
                 title = "导入保险库",
-                desc = "从 .pwdlock 文件恢复或合并数据，冲突会被保留待你裁决。",
+                desc = if (online) {
+                    "从 .pwdlock 文件合并记录进当前在线保险库，同 id 异内容直接覆盖并回传云端。"
+                } else {
+                    "从 .pwdlock 文件恢复或合并数据，冲突会被保留待你裁决。"
+                },
                 onClick = { picker.launch("*/*") },
             )
 

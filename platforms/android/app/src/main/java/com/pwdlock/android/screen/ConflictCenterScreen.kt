@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -95,7 +96,7 @@ fun ConflictCenterScreen(navController: NavHostController) {
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(SpaceMD),
                 ) {
-                    items(conflicts, key = { it.id }) { conflict ->
+                    itemsIndexed(conflicts, key = { index, conflict -> "${conflict.id}@${index}" }) { _, conflict ->
                         ConflictItemCard(
                             conflict = conflict,
                             onKeepLocal = {

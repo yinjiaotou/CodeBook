@@ -114,8 +114,14 @@ object BiometricUnlock {
             onSuccess = { authed ->
                 try {
                     val vaultKey = authed.doFinal(ciphertext)
-                    if (VaultSession.unlockWithVaultKey(context, vaultKey)) onSuccess()
-                    else onError("解锁失败")
+                    if (VaultSession.unlockWithVaultKey(context, vaultKey)) {
+                        onSuccess()
+                    } else {
+                        // 指纹认证通过、也解出了 vaultKey，但这把 key 已打不开当前保险库
+                        // （封存的凭据过期 / 保险库被重建）。自动关闭指纹，回退主密码，避免永久卡死。
+                        disable(context)
+                        onError("指纹凭据已失效，请用主密码解锁后重新开启指纹")
+                    }
                 } catch (e: Exception) {
                     onError("指纹解锁失败：${e.message}")
                 }

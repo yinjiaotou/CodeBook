@@ -14,7 +14,7 @@ final class OnlineAccountState: ObservableObject {
     @Published private(set) var isOnlineVaultUnlocked = false
     @Published private(set) var isSignedIn = false
     @Published private(set) var onlineLibrary: OnlineVaultLibraryState?
-    private let serviceURL = URL(string: "http://127.0.0.1:3000/v1")!
+    private let serviceURL = URL(string: "http://124.223.115.40:3000/v1")!
     private static let service = "com.pwdlock.mac.online-access-token"
 
     func login() { authenticate(register: false) }

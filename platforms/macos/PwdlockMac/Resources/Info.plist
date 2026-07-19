@@ -26,5 +26,15 @@
     <string>15.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <!--
+         The deployed sync service currently uses an HTTP IP address. Keep this
+         explicit so URLSession is permitted to reach it until the service is
+         moved behind an HTTPS domain.
+        -->
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
 </dict>
 </plist>
